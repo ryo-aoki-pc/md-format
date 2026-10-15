@@ -75,6 +75,18 @@ test("詰めると段落がつながるものや、ブロックが変わるも�
   }
   // 詰められないリストがあっても、ほかのリストは詰める。
   await assertFormats(options, "- a\n\n  b\n- c\n\n本文\n\n- d\n\n- e\n", "- a\n\n  b\n- c\n\n本文\n\n- d\n- e\n", "混在");
+  // 当てた後の確かめで初めて落ちるリスト (先に見送れないもの) と、詰められるリストをいっしょに当てると、
+  // 半分に分けて確かめ直し、詰められるものだけを詰める。
+  for (const [name, input, expected] of [
+    ["落ちるものが先", "1. a\n\n   2. b\n\n本文\n\n- c\n\n- d\n", "1. a\n\n   2. b\n\n本文\n\n- c\n- d\n"],
+    ["落ちるものが後", "- c\n\n- d\n\n本文\n\n1. a\n\n   2. b\n", "- c\n- d\n\n本文\n\n1. a\n\n   2. b\n"],
+    ["3 つ", "- c\n\n- d\n\n本文\n\n1. a\n\n   2. b\n\n本文\n\n- e\n\n- f\n",
+      "- c\n- d\n\n本文\n\n1. a\n\n   2. b\n\n本文\n\n- e\n- f\n"],
+  ]) {
+    const stats = {};
+    assert.equal(await formatMarkdown(input, { ...options, stats }), expected, name);
+    await assertFormats(options, input, expected, name);
+  }
 });
 
 test("tight_lists を無効にすると詰めない。名前の大文字小文字は区別しない", async (t) => {

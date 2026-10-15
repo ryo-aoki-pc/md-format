@@ -127,6 +127,26 @@ test("組み合わせられない引数は、何も書かずに 2 で終わる",
   assert.equal(await readFile(path.join(cwd, "a.md"), "utf8"), messy);
 });
 
+test("--check で誤りと整形の要るファイルが混ざると、名前を出して 2 で終わる", async (t) => {
+  const cwd = await project(t);
+  await writeFile(path.join(cwd, "b.md"), messy);
+  const child = mdfmt(cwd, ["--check", "missing.md", "b.md"]);
+  assert.equal(child.status, 2);
+  assert.deepEqual(lines(child.stdout), ["b.md"]);
+  assert.match(child.stderr, /^mdfmt: missing\.md: 開けません/u);
+  assert.equal(await readFile(path.join(cwd, "b.md"), "utf8"), messy);
+});
+
+test("標準入力では --write と --check を使えない", async (t) => {
+  const cwd = await project(t);
+  for (const flag of ["--write", "--check"]) {
+    const child = mdfmt(cwd, [flag], messy);
+    assert.equal(child.status, 2, flag);
+    assert.equal(child.stdout, "", flag);
+    assert.match(child.stderr, /ファイルかフォルダと一緒に/u, flag);
+  }
+});
+
 test("-- の後は、- で始まる名前もファイルとして扱う", async (t) => {
   const cwd = await project(t);
   await writeFile(path.join(cwd, "-dash.md"), messy);

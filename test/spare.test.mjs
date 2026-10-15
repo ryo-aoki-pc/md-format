@@ -95,7 +95,7 @@ function quiet(result, code) {
   assert.equal(result.stderr.length, 0);
 }
 
-test("基本の21通りで予備とCLIの結果が一致する", async (t) => {
+test("基本の23通りで予備とCLIの結果が一致する", async (t) => {
   const options = await project(t);
   const badConfig = path.join(options.cwd, "invalid.json");
   await writeFile(badConfig, "{ 壊れた JSON");
@@ -129,6 +129,9 @@ test("基本の21通りで予備とCLIの結果が一致する", async (t) => {
     ["設定ファイルが無い", input, ["--config", path.join(options.cwd, "missing.json")], 2],
     ["不正なJSONの設定", input, ["--config", badConfig], 2],
     ["ルールの例外", input, ["--config", throwingConfig], 2],
+    // 標準入力の --write・--check は引数の誤り (予備も CLI と同じく知らせる)。
+    ["標準入力の--write", input, ["--write"], 2],
+    ["標準入力の--check", input, ["--check"], 2],
   ];
   for (const [name, body, extra, code, base = options.argv] of cases) {
     await t.test(name, async (t) => {
@@ -271,7 +274,7 @@ test("見出しの不正・別のscript・存在しないcwdは何も出さず�
 test("ファイル・フォルダ・--write・--check・--help・--versionの依頼は引き受けずに86で終わる", async (t) => {
   const options = await project(t);
   for (const extra of [[options.filename], [options.cwd], ["--write", options.filename], ["--check", options.filename],
-    ["--write"], ["--check"], ["--help"], ["--version"]]) {
+    ["--help"], ["--version"]]) {
     const argv = extra.some((argument) => !argument.startsWith("-")) ? ["--runtime-dir", runtimeDir, ...extra] : [...options.argv, ...extra];
     const running = await startSpare(t);
     quiet(await send(running, { script: formatterPath, argv, cwd: options.cwd }, input), 86);

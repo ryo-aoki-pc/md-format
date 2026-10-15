@@ -1186,7 +1186,8 @@ function listTighteningEdits(lines, nodes, selection) {
 
 function deleteRows(source, lines, rows) {
   let result = source;
-  for (const row of [...rows].sort((a, b) => b - a)) {
+  // 同じ行を 2 回消さない (行の位置は元の文書のもの)。下の行から消す。
+  for (const row of [...new Set(rows)].sort((a, b) => b - a)) {
     const line = lines[row - 1];
     result = result.slice(0, line.start) + result.slice(line.start + line.content.length + line.ending.length);
   }

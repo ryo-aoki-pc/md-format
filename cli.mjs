@@ -72,6 +72,9 @@ export function parseArguments(argv) {
     index++;
   }
   if (options.write && options.check) throw new Error("--write と --check は一緒に指定できません。");
+  if ((options.write || options.check) && !inputs.length && !options.help && !options.version) {
+    throw new Error("--write と --check は、ファイルかフォルダと一緒に指定してください（標準入力は書き換えも確かめもしない）。");
+  }
   if (options.filename !== undefined && inputs.length) throw new Error("--filename は、標準入力を整形するときだけ指定できます。");
   return { options, inputs };
 }
