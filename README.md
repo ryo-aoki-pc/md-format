@@ -25,8 +25,11 @@ node ~/md-format/scripts/setup.mjs
 node ~/md-format/scripts/setup.mjs --check
 ```
 
-- 依存はリポジトリの外（Linux は `${XDG_DATA_HOME:-~/.local/share}/md-format`、Windows は `%LOCALAPPDATA%\md-format`）に入る
-- 起動役 `mdfmt` は `~/.local/bin`（Windows は `%USERPROFILE%\.local\bin` に `mdfmt.cmd` と、Git Bash 用の `mdfmt`）に置く。PATH に無ければ `--check` が知らせる
+- 依存はリポジトリの外（Linux は `${XDG_DATA_HOME:-~/.local/share}/md-format`、Windows は `%LOCALAPPDATA%\md-format`、macOS は `~/Library/Application Support/md-format`）に入る
+- 起動役 `mdfmt` は `~/.local/bin`（Windows は `%USERPROFILE%\.local\bin`）に置く。PATH に無ければ `--check` が知らせる
+- Windows の起動役は 3 つ: PowerShell 用の `mdfmt.ps1`、cmd 用の `mdfmt.cmd`、Git Bash 用の `mdfmt`。PowerShell は `.ps1` を選ぶ
+  （実行ポリシーが RemoteSigned のとき。setup-notes の手順で設定する）
+- cmd の `mdfmt.cmd` は、引数の `&`・`%名前%` などを cmd が解釈する。そうした文字を含むファイル名は、PowerShell か Git Bash から渡す
 - 更新は `git -C ~/md-format pull --ff-only` の後に、導入スクリプトを実行し直す
 - 導入先を使っている Neovim があると、Windows では入れ替えられないことがある。そのときは Neovim を閉じてやり直す
 
@@ -42,7 +45,8 @@ mdfmt --help
 ```
 
 - 終了コードは 0（成功）・1（`--check` で整形の要るファイルがあった）・2（誤り）。1 つのファイルの誤りで止めずに、残りを扱う
-- フォルダは、その下の `*.md` を名前順に扱う。`.git`・`node_modules`・`.` で始まるフォルダは除く
+- フォルダは、その下の `*.md` を名前順に扱う。`.git`・`node_modules`・`.` で始まるフォルダと、フォルダの中のシンボリックリンク（ファイルもフォルダも）は除く
+- 引数に渡したシンボリックリンクはたどる。`--write` は、リンクの先のファイルを書き換える（リンクはそのまま）
 - ファイルは UTF-8 として読む。UTF-8 でなければ変えずに誤りにする。BOM と改行（LF・CRLF）は保つ
 - markdownlint の設定（`.markdownlint.jsonc`・`.markdownlint-cli2.jsonc` など）は、markdownlint-cli2 と同じく探す。
   ファイルが今のフォルダの下にあれば、今のフォルダを基準にする

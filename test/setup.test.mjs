@@ -80,6 +80,19 @@ test("導入: 作業用フォルダで入れて確かめてから入れ替え、
     const cmd = await readFile(launcher, "utf8");
     assert.ok(cmd.includes(`node "${path.join(space.installDir, "format.mjs")}" %*`), cmd);
     assert.ok(existsSync(path.join(space.binDir, "mdfmt")), "Git Bash の起動役も置く");
+    // PowerShell は mdfmt.ps1 を選び、& や %名前% を含む名前のファイルも、そのまま渡す。
+    const ps1 = path.join(space.binDir, "mdfmt.ps1");
+    assert.ok(existsSync(ps1));
+    const odd = path.join(space.root, "a&b %TEMP% x.md");
+    await writeFile(odd, "#  見出し\n");
+    for (const shell of ["pwsh.exe", "powershell.exe"]) {
+      const viaPs = spawnSync(shell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+        `& { $env:PATH = '${space.binDir.replaceAll("'", "''")};' + $env:PATH; mdfmt --check '${odd.replaceAll("'", "''")}'; exit $LASTEXITCODE }`],
+      { env: space.env, encoding: "utf8" });
+      if (viaPs.error?.code === "ENOENT") continue;
+      assert.equal(viaPs.status, 1, `${shell}: ${viaPs.stdout}${viaPs.stderr}`);
+      assert.match(viaPs.stdout, /a&b %TEMP% x\.md/u, shell);
+    }
   }
 });
 
@@ -123,6 +136,10 @@ test("clone の中と、clone を含むフォルダには導入しない", async
   assert.equal(inside.status, 1);
   assert.match(inside.stderr, /リポジトリの外/u);
   assert.equal(existsSync(path.join(packageDir, "installed")), false);
+  // ".." で始まる名前のフォルダも clone の中。
+  const dotted = setup({ ...space, installDir: path.join(packageDir, "..backup") });
+  assert.equal(dotted.status, 1);
+  assert.match(dotted.stderr, /リポジトリの外/u);
   const ancestor = setup({ ...space, installDir: path.dirname(packageDir) });
   assert.equal(ancestor.status, 1);
   assert.match(ancestor.stderr, /clone を含むフォルダ/u);
@@ -175,10 +192,13 @@ test("--check は何も変えずに、足りないものを知らせて 1 で終
   assert.equal(existsSync(space.binDir), false);
 });
 
-test("Windows の mdfmt.cmd には、ASCII でない導入先のパスを書かない", { skip: !windows }, async (t) => {
+test("Windows では、ASCII でない導入先のパスを mdfmt.cmd に書かず、PowerShell と Git Bash の起動役は置く", { skip: !windows }, async (t) => {
   const space = await workspace(t);
-  const refused = setup({ ...space, installDir: path.join(space.root, "導入先", "md-format") });
-  assert.equal(refused.status, 1);
-  assert.match(refused.stderr, /ASCII でない/u);
-  assert.equal(existsSync(path.join(space.root, "導入先", "md-format")), false);
+  const installDir = path.join(space.root, "導入先", "md-format");
+  const child = setup({ ...space, installDir });
+  assert.equal(child.status, 0, child.stdout + child.stderr);
+  assert.match(child.stdout, /mdfmt\.cmd は置きません/u);
+  assert.equal(existsSync(path.join(space.binDir, "mdfmt.cmd")), false);
+  assert.ok((await readFile(path.join(space.binDir, "mdfmt.ps1"), "utf8")).includes(path.join(installDir, "format.mjs")));
+  assert.ok(existsSync(path.join(space.binDir, "mdfmt")));
 });

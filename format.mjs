@@ -1147,7 +1147,7 @@ export const htmlInternals = Object.freeze({ normalizedHtml });
 
 // 空行の後に、リストの印か字下げした行が続く所 (入れ物の > の後を含む)。loose のリストの無い文書を、解析せずに見分ける
 // (広めに当たっても解析が 1 回増えるだけ)。
-const looseListHint = new RegExp(String.raw`^[ \t]*(?:>[ \t]?)*[ \t]*\r?\n(?:[ \t]*>[ \t]?)*` +
+const looseListHint = new RegExp(String.raw`^[ \t]*(?:>[ \t]?)*[ \t]*(?:\r\n?|\n)(?:[ \t]*>[ \t]?)*` +
   String.raw`(?:[ \t]*(?:[-+*]|\d{1,9}[.)])(?:[ \t]|\r?$)|(?: {2,}|\t)[ \t]*\S)`, "mu");
 
 // loose のリストごとに、詰めるために消す行 (1 から数える)。消すのは、となり合う項目の間と、1 つの項目の中のとなり合う
@@ -1454,7 +1454,7 @@ export async function formatMarkdown(source, options = {}) {
     }
     if (!changed) {
       if (snapshotOf(current).loose !== originalOf().loose) {
-        throw new Error("説明リストの構造を保持できませんでした。");
+        throw new Error("文書の構造 (説明リストかリストの詰まり) を保持できませんでした。");
       }
       return finish(current);
     }

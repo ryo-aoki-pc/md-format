@@ -56,9 +56,10 @@ function parseArguments(argv) {
   return options;
 }
 
+// child が parent そのものか、その下か。".." で始まる名前のフォルダ (..backup など) は下にあるとみなす。
 function inside(child, parent) {
   const relative = path.relative(path.resolve(parent), path.resolve(child));
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  return relative === "" || (relative.split(/[\\/]/u)[0] !== ".." && !path.isAbsolute(relative));
 }
 
 function onPath(directory) {
@@ -123,27 +124,38 @@ function nodeMajor() {
   return Number(process.versions.node.split(".")[0]);
 }
 
-// 起動役の中身。Linux と Git Bash は sh、PowerShell と cmd は .cmd。
+// 起動役の中身。Linux と Git Bash は sh。Windows の PowerShell は mdfmt.ps1、cmd は mdfmt.cmd。
+// PowerShell は同じフォルダの .ps1 を .cmd より先に選ぶ。.cmd を通すと、cmd.exe が引数の & や %名前% を解釈してしまう
+// (PowerShell から mdfmt.cmd に a&b.md を渡すと、b.md をコマンドとして動かそうとする) ので、PowerShell では .ps1 を使う。
+// .ps1 は、setup-notes の手順で実行ポリシーを RemoteSigned にした PowerShell で動く。
 function launchers(installDir, binDir) {
   const formatter = path.join(installDir, "format.mjs");
-  if (!windows) {
-    const quoted = `'${formatter.replaceAll("'", "'\\''")}'`;
-    return [{ file: path.join(binDir, "mdfmt"), text: `#!/bin/sh\nexec node ${quoted} "$@"\n`, mode: 0o755 }];
-  }
-  // cmd は .cmd を OEM のコードページで読むので、ASCII でないパスは書かない。%LOCALAPPDATA% の下なら、変数で書く。
+  const sh = (file) => `#!/bin/sh\nexec node '${file.replaceAll("'", "'\\''")}' "$@"\n`;
+  if (!windows) return [{ file: path.join(binDir, "mdfmt"), text: sh(formatter), mode: 0o755 }];
   const localAppData = process.env.LOCALAPPDATA;
-  let cmdPath = formatter;
-  if (localAppData && inside(formatter, localAppData)) {
-    cmdPath = path.join("%LOCALAPPDATA%", path.relative(localAppData, formatter));
-  }
-  if (/[^\x20-\x7e]|[%"]/u.test(cmdPath.replace(/^%LOCALAPPDATA%/u, ""))) {
-    throw new Error(`起動役 mdfmt.cmd に、ASCII でない文字か % か " を含むパスは書けません: ${formatter}`);
-  }
-  const posix = formatter.replaceAll("\\", "/");
-  return [
-    { file: path.join(binDir, "mdfmt.cmd"), text: `@echo off\r\nnode "${cmdPath}" %*\r\nexit /b %ERRORLEVEL%\r\n` },
-    { file: path.join(binDir, "mdfmt"), text: `#!/bin/sh\nexec node '${posix.replaceAll("'", "'\\''")}' "$@"\n`, mode: 0o755 },
+  const underLocalAppData = localAppData && inside(formatter, localAppData);
+  const relative = underLocalAppData ? path.relative(localAppData, formatter) : "";
+  // PowerShell 5.1 は BOM の無い .ps1 を ANSI で読むので、BOM を付ける。
+  const psPath = underLocalAppData
+    ? `(Join-Path $env:LOCALAPPDATA '${relative.replaceAll("'", "''")}')`
+    : `'${formatter.replaceAll("'", "''")}'`;
+  const result = [
+    {
+      file: path.join(binDir, "mdfmt.ps1"),
+      text: "\ufeff# mdfmt の起動役 (PowerShell)。md-format の導入スクリプト (scripts/setup.mjs) が置いた。\r\n" +
+        `$formatter = ${psPath}\r\n` +
+        "if ($MyInvocation.ExpectingInput) { $input | & node $formatter @args } else { & node $formatter @args }\r\n" +
+        "exit $LASTEXITCODE\r\n",
+    },
+    { file: path.join(binDir, "mdfmt"), text: sh(formatter.replaceAll("\\", "/")), mode: 0o755 },
   ];
+  // cmd は .cmd を OEM のコードページで読み、% を展開するので、ASCII でないパスや % と " を含むパスは書かない
+  // (そのときは .cmd を置かない。cmd からは使えないが、PowerShell と Git Bash からは使える)。
+  const cmdPath = underLocalAppData ? path.join("%LOCALAPPDATA%", relative) : formatter;
+  if (!/[^\x20-\x7e]|[%"]/u.test(underLocalAppData ? relative : formatter)) {
+    result.push({ file: path.join(binDir, "mdfmt.cmd"), text: `@echo off\r\nnode "${cmdPath}" %*\r\nexit /b %ERRORLEVEL%\r\n` });
+  }
+  return result;
 }
 
 function run(command, args, options) {
@@ -288,14 +300,23 @@ function install({ installDir, binDir }) {
     } catch {
       console.log(`注意: 前の導入を消せませんでした。後で消してください: ${previous}`);
     }
+    // 起動役も、鍵を持っている間に置く。
+    fs.mkdirSync(binDir, { recursive: true });
+    for (const launcher of planned) {
+      writeLauncher(launcher);
+      console.log(`起動役を置きました: ${launcher.file}`);
+    }
+    if (windows && !planned.some(({ file }) => file.endsWith(".cmd"))) {
+      console.log(`注意: 導入先のパスに ASCII でない文字か % か " があるので、cmd 用の mdfmt.cmd は置きません（PowerShell と Git Bash からは使えます）`);
+    }
   } finally {
-    remove(staging);
+    // 片づけが失敗しても、元の誤りを消さず、鍵は外す。
+    try {
+      remove(staging);
+    } catch {
+      console.log(`注意: 作業用フォルダを消せませんでした。後で消してください: ${staging}`);
+    }
     fs.rmSync(lock, { recursive: true, force: true });
-  }
-  fs.mkdirSync(binDir, { recursive: true });
-  for (const launcher of planned) {
-    writeLauncher(launcher);
-    console.log(`起動役を置きました: ${launcher.file}`);
   }
 }
 

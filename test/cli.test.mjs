@@ -177,6 +177,16 @@ test("読めない子フォルダがあっても、ほかのファイルを扱�
   assert.match(child.stderr, /docs\/private: 開けません/u);
 });
 
+test(".. で始まる名前のフォルダのファイルも、今のフォルダを設定の基準にする", async (t) => {
+  const cwd = await project(t);
+  await writeFile(path.join(cwd, ".markdownlint.json"), JSON.stringify({ default: false, MD009: true }));
+  await mkdir(path.join(cwd, "..backup"));
+  await writeFile(path.join(cwd, "..backup", "a.md"), "本文 \n");
+  const child = mdfmt(cwd, ["--write", path.join("..backup", "a.md")]);
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(await readFile(path.join(cwd, "..backup", "a.md"), "utf8"), "本文\n");
+});
+
 test("-- の後は、- で始まる名前もファイルとして扱う", async (t) => {
   const cwd = await project(t);
   await writeFile(path.join(cwd, "-dash.md"), messy);

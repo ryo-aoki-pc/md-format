@@ -106,9 +106,10 @@ function rangeOf(options) {
   };
 }
 
+// file が directory そのものか、その下か。".." で始まる名前のフォルダ (..backup など) は下にあるとみなす。
 function isInside(directory, file) {
   const relative = path.relative(directory, file);
-  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+  return relative === "" || (relative.split(/[\\/]/u)[0] !== ".." && !path.isAbsolute(relative));
 }
 
 // 1 つの文書の整形の設定。conform は Neovim の作業ディレクトリで起動する。以前の markdownlint-cli2 --fix と同じく、
@@ -170,13 +171,15 @@ async function replaceFile(file, bytes) {
   const target = await realpath(file);
   const { mode } = await stat(target);
   const temporary = path.join(path.dirname(target), `.${path.basename(target)}.mdfmt-${process.pid}.tmp`);
+  // 前に止まった実行の一時ファイル (同じ番号) が残っていれば消してから作る。
+  await rm(temporary, { force: true });
   try {
     await writeFile(temporary, bytes, { flag: "wx", mode });
     await chmod(temporary, mode);
     await rename(temporary, target);
   } catch (error) {
     await rm(temporary, { force: true });
-    throw error;
+    throw new Error(`書き換えられません（ファイルは変えていません）: ${firstLine(error)}`, { cause: error });
   }
 }
 
@@ -250,7 +253,15 @@ async function formatFiles(base, inputs, mode) {
         process.stdout.write(encodeDocument(output, hasBom));
       } else if (output !== text) {
         changed = true;
-        if (mode === "write") await replaceFile(file, encodeDocument(output, hasBom));
+        if (mode === "write") {
+          try {
+            await replaceFile(file, encodeDocument(output, hasBom));
+          } catch (error) {
+            process.stderr.write(`mdfmt: ${displayPath(file)}: ${firstLine(error)}\n`);
+            failed = true;
+            continue;
+          }
+        }
         process.stdout.write(`${displayPath(file)}\n`);
       }
     } catch (error) {

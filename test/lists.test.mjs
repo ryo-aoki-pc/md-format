@@ -55,6 +55,7 @@ test("loose のリストの項目の間と、項目の中のブロックの間�
     ["中だけ", "- a\n  - b\n\n  - c\n- d\n", "- a\n  - b\n  - c\n- d\n"],
     ["段落とフェンスの間 (フェンスの中の空行は残す)", "- a\n\n  ```\n  x\n\n  y\n  ```\n- b\n", "- a\n  ```\n  x\n\n  y\n  ```\n- b\n"],
     ["CRLF", "- a\r\n\r\n- b\r\n", "- a\r\n- b\r\n"],
+    ["CR だけ", "- a\r\r- b\r", "- a\r- b\r"],
     ["front matter の後", "---\ntitle: x\n---\n\n- a\n\n- b\n", "---\ntitle: x\n---\n\n- a\n- b\n"],
   ]) {
     const output = await assertFormats(options, input, expected, name);
