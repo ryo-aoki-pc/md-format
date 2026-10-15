@@ -146,3 +146,79 @@ test("GFM でも折り、GitHub の参照の中では折らない", async (t) =>
   await assertWraps({ ...options, flavor: "glfm" }, colon,
     "This prefix line is exactly forty\nchars! : colon starts the next line here.\n", "GLFM の :");
 });
+
+test("2 行目からの行は、その行の頭で続ける (怠惰な続きの行は怠惰なまま)", async (t) => {
+  const options = await project(t);
+  await assertWraps(options, "- first line\n  second line that is long enough to wrap at the width here\n",
+    "- first line\n  second line that is long enough to\n  wrap at the width here\n", "リストの 2 行目");
+  await assertWraps(options, "> first line\nlazy continuation line that is long enough to wrap here\n",
+    "> first line\nlazy continuation line that is long\nenough to wrap here\n", "怠惰な続きの行");
+});
+
+test("1 行を 3 回以上折り、複数の段落の行を同じ回に折る", async (t) => {
+  const options = await project(t);
+  const words = (count) => Array.from({ length: count }, () => "word").join(" ");
+  const paragraph = words(30);
+  const wrapped = [words(8), words(8), words(8), words(6)].join("\n");
+  // 引用とリストの中では、行の頭の 2 字の分だけ、1 行の語が減る。
+  const nested = [words(7), words(7), words(7), words(7), words(2)];
+  await assertWraps(options, `${paragraph}\n\n> ${paragraph}\n\n- ${paragraph}\n`,
+    `${wrapped}\n\n> ${nested.join("\n> ")}\n\n- ${nested.join("\n  ")}\n`, "3 つの段落");
+});
+
+test("範囲が行の一部だけのときは、その行を折らない", async (t) => {
+  const options = await project(t);
+  const input = "This is a fairly long English sentence that should be wrapped at spaces only.\n";
+  assert.equal(await formatMarkdown(input, { ...options, range: { start: [1, 0], end: [1, 10] } }), input);
+  assert.equal(await formatMarkdown(input, { ...options, range: { start: [1, 0], end: [1, Infinity] } }),
+    "This is a fairly long English sentence\nthat should be wrapped at spaces only.\n");
+});
+
+test("インラインの HTML は、開きタグから対の閉じタグまでで折らず、その外では折る", async (t) => {
+  const options = await project(t);
+  await assertWraps(options, "Press <kbd>Ctrl + Alt</kbd> and <kbd>Del</kbd> to restart the machine now.\n",
+    "Press <kbd>Ctrl + Alt</kbd>\nand <kbd>Del</kbd> to restart the\nmachine now.\n", "対のタグ");
+  // 閉じない開きタグの後は、段落の終わりまで折らない。
+  const output = await formatMarkdown("Some words here and then <span>an unclosed span with many words inside it\n", options);
+  assert.match(output, /<span>an unclosed span with many words inside it\n$/u);
+  // 複数の行にまたがる、空白がそのまま描かれる要素の中でも折らない。
+  const multiline = "This is a fairly long English sentence that should be wrapped at spaces only.\n\n" +
+    "a <span style=\"white-space: pre\">\nkeep   these   spaces   inside   the   span   please   now\n</span>\n\n" +
+    "This is another long English sentence that should be wrapped at spaces only.\n";
+  await assertWraps(options, multiline, "This is a fairly long English sentence\nthat should be wrapped at spaces only.\n\n" +
+    "a <span style=\"white-space: pre\">\nkeep   these   spaces   inside   the   span   please   now\n</span>\n\n" +
+    "This is another long English sentence\nthat should be wrapped at spaces only.\n", "複数の行の span");
+});
+
+test("インラインの HTML のある段落の長い行が多くても、描画と解析を修正ごとに繰り返さない", async (t) => {
+  const options = await project(t);
+  const paragraph = "Press <kbd>Ctrl</kbd> and then type some words that make this line long.\n";
+  const input = Array.from({ length: 30 }, () => paragraph).join("\n");
+  const stats = {};
+  const output = await formatMarkdown(input, { ...options, stats });
+  assert.equal(output, Array.from({ length: 30 }, () => "Press <kbd>Ctrl</kbd> and then type some\nwords that make this line long.\n").join("\n"));
+  assert.ok(stats.renders <= 4, `描画は ${stats.renders} 回`);
+  assert.ok(stats.parses <= 10, `解析は ${stats.parses} 回`);
+});
+
+test("全角の文字 (補助漢字・絵文字・半角カナ・異体字セレクタ付き) の間では折らず、ハングルの間では折る", async (t) => {
+  const options = await project(t);
+  const repeat = (word, count) => Array.from({ length: count }, () => word).join(" ") + "\n";
+  for (const word of ["𠮷", "😀", "ｱｲｳ", "葛\u{e0100}"]) {
+    const input = repeat(word, 25);
+    assert.equal(await formatMarkdown(input, options), input, JSON.stringify(word));
+  }
+  const korean = repeat("한국어 문장을", 6);
+  const output = await assertWraps(options, korean, await formatMarkdown(korean, options), "ハングル");
+  assert.ok(output.split("\n").length > 2, "ハングルの間では折る");
+});
+
+test("ほかの修正が当たらない回にも、長い行を折る", async (t) => {
+  const options = await project(t);
+  await writeFile(path.join(options.cwd, ".markdownlint.json"),
+    JSON.stringify({ default: false, MD010: true, MD013: { line_length: 40 } }));
+  // コードブロックの中のタブ (MD010) の修正は、コードの中身を変えるので、いつも当たらない。
+  const input = "```\na\tb\n```\n\nThis is a fairly long English sentence that should be wrapped at spaces only.\n";
+  await assertWraps(options, input,
+    "```\na\tb\n```\n\nThis is a fairly long English sentence\nthat should be wrapped at spaces only.\n", "MD010 と共に");
+});
