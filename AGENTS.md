@@ -23,13 +23,15 @@ Windows 11・AlmaLinux 10 の導入・利用・更新・任意操作は、setup-
 - `scripts/setup.mjs` — リポジトリの外への導入と `--check`
 - `test/` — `node --test` の試験。`reference.test.mjs` は `docs/reference/rules.md` と README の「整形の例」の例をすべて整形し直して確かめる
 - `docs/reference/rules.md` — 分類とルールごとの例（試験が読む。例の書き方は `reference.test.mjs` の決まりに従う）
+- `bench/bench.mjs` — 速さの測り方（比べるコマンドを交互に動かし、中央値と最も遅い値を Markdown の表で出す）
+- `docs/verification/readme.md` — 検証記録（試験・前の整形器との比べ・CLI・導入・速さ）
 
 ## テスト
 
 ```sh
 npm ci --ignore-scripts
 npm test
-for f in *.mjs scripts/*.mjs test/*.mjs; do node --check "$f"; done
+for f in *.mjs scripts/*.mjs test/*.mjs bench/*.mjs; do node --check "$f"; done
 git diff --check
 ```
 
