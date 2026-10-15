@@ -96,6 +96,15 @@ test("導入: 作業用フォルダで入れて確かめてから入れ替え、
   }
 });
 
+test("導入先の整形器のファイルが欠けると、--check が知らせる", async (t) => {
+  const space = await workspace(t);
+  assert.equal(setup(space).status, 0);
+  await rm(path.join(space.installDir, "spare.mjs"));
+  const check = setup(space, "--check");
+  assert.equal(check.status, 1);
+  assert.match(check.stdout, /導入先に spare\.mjs がありません/u);
+});
+
 test("導入し直すと、前の導入を入れ替えて片づける", async (t) => {
   const space = await workspace(t);
   assert.equal(setup(space).status, 0);

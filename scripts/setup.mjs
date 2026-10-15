@@ -333,7 +333,8 @@ function check({ installDir, binDir }) {
     if (installed.version !== expected.version || (expected.commit && installed.commit !== expected.commit)) {
       problems.push(`導入した版（${label(installed)}）が clone（${label(expected)}）と違います。導入し直してください`);
     }
-    for (const name of ["format.mjs", "cli.mjs", "spare.mjs", path.join("node_modules", "markdownlint-cli2"),
+    // 整形器の .mjs は clone にあるものをすべて (方言の表 flavors.mjs など、後から増えたものも) 確かめる。
+    for (const name of [...sourceFiles(), path.join("node_modules", "markdownlint-cli2"),
       path.join("node_modules", "comrak"), path.join("node_modules", "js-beautify")]) {
       if (!fs.existsSync(path.join(installDir, name))) problems.push(`導入先に ${name} がありません。導入し直してください`);
     }
