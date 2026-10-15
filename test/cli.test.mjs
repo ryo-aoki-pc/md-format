@@ -170,7 +170,8 @@ test("読めない子フォルダがあっても、ほかのファイルを扱�
   await writeFile(path.join(cwd, "docs", "a.md"), messy);
   await writeFile(path.join(cwd, "docs", "z.md"), messy);
   await chmod(path.join(cwd, "docs", "private"), 0o000);
-  t.after(() => chmod(path.join(cwd, "docs", "private"), 0o755));
+  // 一時フォルダを先に消すこともあるので、戻せなくてもよい。
+  t.after(() => chmod(path.join(cwd, "docs", "private"), 0o755).catch(() => {}));
   const child = mdfmt(cwd, ["--write", "docs"]);
   assert.equal(child.status, 2);
   assert.deepEqual(lines(child.stdout), [path.join("docs", "a.md"), path.join("docs", "z.md")]);
