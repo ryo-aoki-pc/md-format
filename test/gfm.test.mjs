@@ -133,6 +133,16 @@ test("GFM の題付き alerts は GitHub と Comrak の差を避けて範囲全�
   }
 });
 
+test("GFM の入れ子の alerts (GitHub では普通の引用) と、題付き alerts の中の loose のリストには触れない", async (t) => {
+  const options = await project(t, { MD009: true, MD027: true });
+  for (const alert of ["> > [!NOTE]\n> >  入れ子 \n", "- > [!NOTE]\n  >  リストの中 \n", "> [!NOTE] 題\n> - a\n>\n> - b\n"]) {
+    const input = alert + "\n外の本文 \n";
+    assert.equal(await formatMarkdown(input, options), alert + "\n外の本文\n", JSON.stringify(alert));
+  }
+  // 文書の直下の題の無い alerts は、ふつうに整形する。
+  assert.equal(await formatMarkdown("> [!NOTE]\n>  本文 \n", options), "> [!NOTE]\n> 本文\n");
+});
+
 test("GFM の題付き alerts の中の HTML は保ち、外の HTML だけを整形する", async (t) => {
   const options = await project(t);
   const alert = "> [!NOTE] 題\n> <div><p>中の本文</p></div>\n";

@@ -322,12 +322,15 @@ function sortedSpans(spans) {
   return { starts: sorted.map(([from]) => from), maxEnds };
 }
 
-// GFM の題つき alerts は GitHub と Comrak で解釈が違うため、行の全体を修正しない。
+// GFM で、Comrak は alerts と読むが GitHub は普通の引用として描く範囲 (題つきの alerts と、文書の直下でない alerts。
+// GitHub の alerts は入れ子にできない)。解釈が違うので、行の全体を修正しない。
 function titledAlertRows(nodes, flavor) {
   const rows = new Set();
   if (!flavor.protectTitledAlerts) return rows;
   for (const node of nodes) {
-    if (nodeType(node) !== "Alert" || node.data.value.Alert.title == null) continue;
+    if (nodeType(node) !== "Alert") continue;
+    const nested = node.parent !== undefined && nodeType(nodes[node.parent]) !== "Document";
+    if (node.data.value.Alert.title == null && !nested) continue;
     const position = node.data.sourcepos;
     for (let row = position.start.line; row <= position.end.line; row++) rows.add(row);
   }
@@ -1199,12 +1202,14 @@ const looseListHint = new RegExp(String.raw`^[ \t]*(?:>[ \t]?)*[ \t]*(?:\r\n?|\n
 // 消さない (項目の子のブロックの間しか見ないので、子の中の行には触れない)。詰めると段落がつながるリスト (1 つの項目に
 // 段落が続けて 2 つある・段落の後に字下げのコードがある) は見送る。ほかの詰められないもの (段落を割り込めないブロックが
 // 続くものなど) は、当てた後の確かめで落とす。範囲を指定したときは、範囲に収まるリストだけを扱う。
-function listTighteningEdits(lines, nodes, selection) {
+function listTighteningEdits(lines, nodes, selection, protectedRows) {
   const edits = [];
   const blank = (row) => /^[ \t>]*$/u.test(lines[row - 1]?.content ?? "x");
   for (let index = 0; index < nodes.length; index++) {
     if (nodeType(nodes[index]) !== "List" || nodes[index].data.value.List.tight) continue;
     const { start, end } = nodes[index].data.sourcepos;
+    // GFM で、GitHub と Comrak の解釈が違う alerts の中のリストは詰めない。
+    if (protectedRows.has(start.line) || protectedRows.has(end.line)) continue;
     if (selection && (lines[start.line - 1].start < selection.start ||
         lines[end.line - 1].start + lines[end.line - 1].content.length > selection.end)) continue;
     const rows = [];
@@ -1271,7 +1276,7 @@ function tightenLists(source, { parse, selection, exhaustive, flavor }) {
   if (!exhaustive && !looseListHint.test(source)) return source;
   const lines = linesOf(source);
   const before = parse(parsedText(source, lines, flavor).text);
-  const edits = listTighteningEdits(lines, before, selection);
+  const edits = listTighteningEdits(lines, before, selection, titledAlertRows(before, flavor));
   if (!edits.length) return source;
   const accepted = [];
   const apply = (chosen) => deleteRows(source, lines, chosen.flatMap((edit) => edit.rows));

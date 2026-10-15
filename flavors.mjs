@@ -105,7 +105,8 @@ export const flavors = Object.freeze({
     descriptionProjection: false,
     descriptionHint: null,
     unconvertibleHeading: /^#+\d/u,
-    blockElements: new Set([...blockElements].filter((name) => !removedElements.has(name))),
+    // title は tagfilter でエスケープされて文字になるので、ブロック要素として扱わない。
+    blockElements: new Set([...blockElements].filter((name) => !removedElements.has(name) && name !== "title")),
     whitespaceElements,
     protectTitledAlerts: true,
   }),
