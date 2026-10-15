@@ -327,5 +327,11 @@ export function cliFailure(error) {
 }
 
 export function main() {
+  // 出力の先が先に閉じても (mdfmt --check docs | head など)、例外の表示で落ちずに、残りのファイルを扱い終える。
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.on("error", (error) => {
+      if (error.code !== "EPIPE") throw error;
+    });
+  }
   cli().catch(cliFailure);
 }

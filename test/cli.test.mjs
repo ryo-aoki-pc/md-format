@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -202,6 +202,23 @@ test("範囲は 1 つのファイルにも使える", async (t) => {
   const child = mdfmt(cwd, ["--range-start", "3", "--range-end", "3", "a.md"]);
   assert.equal(child.status, 0, child.stderr);
   assert.equal(child.stdout, "#  一\n\n# 二\n");
+});
+
+test("出力の先が先に閉じても、例外を出さずに残りのファイルを書き換えて終わる", async (t) => {
+  const cwd = await project(t);
+  const files = Array.from({ length: 40 }, (_, index) => path.join(cwd, `${String(index).padStart(2, "0")}.md`));
+  for (const file of files) await writeFile(file, messy);
+  const child = spawn(process.execPath, [formatterPath, "--write", "."], { cwd });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  // 1 つめのファイル名を受け取ったら、読む側を閉じる (mdfmt --write docs | head -1 と同じ)。
+  child.stdout.once("data", () => child.stdout.destroy());
+  const status = await new Promise((resolve) => child.on("close", resolve));
+  assert.equal(stderr, "");
+  assert.equal(status, 0);
+  for (const file of files) assert.equal(await readFile(file, "utf8"), tidy, file);
 });
 
 test("--help と --version", async (t) => {
