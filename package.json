@@ -1,0 +1,15 @@
+{
+  "name": "md-format",
+  "version": "0.1.0",
+  "description": "GFM と GLFM の Markdown を、描画を変えずに整形する CLI（mdfmt）",
+  "private": true,
+  "type": "module",
+  "bin": { "mdfmt": "format.mjs" },
+  "engines": { "node": ">=22" },
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "dependencies": {
+    "comrak": "0.48.0-rc.0",
+    "js-beautify": "2.0.3",
+    "markdownlint-cli2": "0.23.3"
+  }
+}
