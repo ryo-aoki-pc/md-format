@@ -16,7 +16,7 @@ export const exitCodes = Object.freeze({ ok: 0, changed: 1, error: 2 });
 const valueOptions = new Map([["--runtime-dir", "runtimeDir"], ["--filename", "filename"], ["--config", "config"],
   ["--range-start", "rangeStart"], ["--range-end", "rangeEnd"],
   ["--range-start-column", "rangeStartColumn"], ["--range-end-column", "rangeEndColumn"],
-  ["--enable-fixes", "enableFixes"], ["--disable-fixes", "disableFixes"]]);
+  ["--enable-fixes", "enableFixes"], ["--disable-fixes", "disableFixes"], ["--flavor", "flavor"]]);
 const flagOptions = new Map([["--write", "write"], ["--check", "check"],
   ["--help", "help"], ["-h", "help"], ["--version", "version"], ["-v", "version"]]);
 
@@ -31,6 +31,7 @@ GFM と GLFM の Markdown を、描画を変えずに整形する。
   --check                    書き換えずに、変わるファイルの名前を出す（あれば終了コード 1）
   --filename <パス>          標準入力の文書のファイル名（設定を探す場所。既定は ./stdin.md）
   --config <パス>            markdownlint の設定ファイル
+  --flavor <gfm|glfm>        方言（省略時は最寄りの .md-format.json、その設定も無ければ glfm）
   --enable-fixes <名前,…>    直す対象（分類名かルール名）を有効にする
   --disable-fixes <名前,…>   直す対象を無効にする
   --range-start <行> --range-end <行> [--range-start-column <桁>] [--range-end-column <桁>]
@@ -38,6 +39,9 @@ GFM と GLFM の Markdown を、描画を変えずに整形する。
   --runtime-dir <フォルダ>   依存（node_modules）の場所。既定は mdfmt の導入先
   -h, --help                 この使い方を出す
   -v, --version              版を出す
+
+文書のフォルダから上へ .md-format.json を探す（flavor と fixes を設定できる）。
+直す対象は、引数・.md-format.json・既定の順に、各層のルール名・分類名を見て決める。
 
 終了コード: 0 は成功、1 は --check で変わるファイルがあった、2 は誤り。
 PowerShell では、パイプやリダイレクトは文字コードや改行を変えることがあるので、ファイルを渡して --write か --check で使う。
@@ -70,6 +74,9 @@ export function parseArguments(argv) {
     if (!value || value.startsWith("--")) throw new Error(`引数 ${argument} の値がありません。`);
     options[name] = value;
     index++;
+  }
+  if (options.flavor !== undefined && options.flavor !== "gfm" && options.flavor !== "glfm") {
+    throw new Error("方言は gfm か glfm を指定してください。");
   }
   if (options.write && options.check) throw new Error("--write と --check は一緒に指定できません。");
   if ((options.write || options.check) && !inputs.length && !options.help && !options.version) {
@@ -112,10 +119,64 @@ function isInside(directory, file) {
   return relative === "" || (relative.split(/[\\/]/u)[0] !== ".." && !path.isAbsolute(relative));
 }
 
+// 文書のフォルダから上へたどり、最初の設定だけを読む。覚えた結果は 1 回の CLI 呼び出しの中だけで使う。
+async function projectConfiguration(directory, cache) {
+  if (cache.has(directory)) return cache.get(directory);
+  const filename = path.join(directory, ".md-format.json");
+  let source;
+  try {
+    source = await readFile(filename, "utf8");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw new Error(`${filename}: 設定ファイルを読めません。`);
+    const parent = path.dirname(directory);
+    const configuration = parent === directory ? undefined : await projectConfiguration(parent, cache);
+    cache.set(directory, configuration);
+    return configuration;
+  }
+  let configuration;
+  try {
+    configuration = JSON.parse(source);
+  } catch {
+    throw new Error(`${filename}: JSON を読めません。`);
+  }
+  if (!configuration || typeof configuration !== "object" || Array.isArray(configuration)) {
+    throw new Error(`${filename}: 設定は JSON のオブジェクトにしてください。`);
+  }
+  for (const name of Object.keys(configuration)) {
+    if (name !== "flavor" && name !== "fixes") throw new Error(`${filename}: 知らない設定です: ${name}`);
+  }
+  if (Object.hasOwn(configuration, "flavor") && configuration.flavor !== "gfm" && configuration.flavor !== "glfm") {
+    throw new Error(`${filename}: 方言は gfm か glfm を指定してください。`);
+  }
+  if (Object.hasOwn(configuration, "fixes")) {
+    if (!configuration.fixes || typeof configuration.fixes !== "object" || Array.isArray(configuration.fixes)) {
+      throw new Error(`${filename}: fixes は名前と真偽値のオブジェクトにしてください。`);
+    }
+    for (const [name, enabled] of Object.entries(configuration.fixes)) {
+      if (typeof enabled !== "boolean") throw new Error(`${filename}: fixes の ${name} は true か false にしてください。`);
+    }
+  }
+  const result = { ...configuration, filename };
+  cache.set(directory, result);
+  return result;
+}
+
 // 1 つの文書の整形の設定。conform は Neovim の作業ディレクトリで起動する。以前の markdownlint-cli2 --fix と同じく、
 // ファイルがその下にあればそこを CLI2 の基準にし、上の階層のプロジェクト設定も読ませる。
-function documentOptions(base, filename) {
-  const options = { ...base, filename };
+async function documentOptions(base, filename, settings) {
+  const project = await projectConfiguration(path.dirname(filename), settings.cache);
+  const options = {
+    ...base, filename,
+    flavor: base.flavor ?? project?.flavor,
+    projectFixes: project?.fixes,
+    projectConfigPath: project?.filename,
+    onWarning(message) {
+      const warning = `${project?.filename ?? filename}: ${firstLine({ message })}`;
+      if (settings.warnings.has(warning)) return;
+      settings.warnings.add(warning);
+      process.stderr.write(`mdfmt: 警告: ${warning}\n`);
+    },
+  };
   if (isInside(process.cwd(), filename)) options.cwd = process.cwd();
   return options;
 }
@@ -205,10 +266,10 @@ function version() {
 }
 
 // 標準入力の文書を整形して標準出力に書く (Neovim の保存時の整形と予備のプロセスもここを通る)。
-async function formatStandardInput(base, input) {
+async function formatStandardInput(base, input, settings) {
   const filename = path.resolve(base.filename ?? path.join(process.cwd(), "stdin.md"));
-  const options = documentOptions({ ...base, filename: undefined }, filename);
   try {
+    const options = await documentOptions({ ...base, filename: undefined }, filename, settings);
     // 標準入力は今までどおり、BOM を外して不正な UTF-8 を置き換える (Neovim のバッファは BOM を含まない)。
     const output = await formatMarkdown(await readText(input), options);
     process.stdout.write(output);
@@ -219,7 +280,7 @@ async function formatStandardInput(base, input) {
   }
 }
 
-async function formatFiles(base, inputs, mode) {
+async function formatFiles(base, inputs, mode, settings) {
   let failed = false;
   let changed = false;
   const files = [];
@@ -248,7 +309,7 @@ async function formatFiles(base, inputs, mode) {
   for (const file of files) {
     try {
       const { text, hasBom } = await readDocument(file);
-      const output = await formatMarkdown(text, documentOptions(base, file));
+      const output = await formatMarkdown(text, await documentOptions(base, file, settings));
       if (mode === "stdout") {
         process.stdout.write(encodeDocument(output, hasBom));
       } else if (output !== text) {
@@ -294,13 +355,14 @@ async function run(argv, input) {
   }
   // --config の相対パスは、起動したフォルダから解く (ファイルごとの基準のフォルダで変わらないように)。
   const config = options.config === undefined ? undefined : path.resolve(options.config);
-  const base = { runtimeDir, config, fixes: fixesOf(options), range: rangeOf(options) };
+  const base = { runtimeDir, config, flavor: options.flavor, fixes: fixesOf(options), range: rangeOf(options) };
+  const settings = { cache: new Map(), warnings: new Set() };
   if (!inputs.length) {
     if (input === process.stdin && process.stdin.isTTY) {
       process.stderr.write(usage);
       return exitCodes.error;
     }
-    return formatStandardInput({ ...base, filename: options.filename }, input);
+    return formatStandardInput({ ...base, filename: options.filename }, input, settings);
   }
   const mode = options.write ? "write" : options.check ? "check" : "stdout";
   if (mode === "stdout") {
@@ -313,7 +375,7 @@ async function run(argv, input) {
       (await stat(path.resolve(inputs[0])).catch(() => undefined))?.isDirectory())) {
     throw new Error("範囲は、標準入力か 1 つのファイルのときだけ指定できます。");
   }
-  return formatFiles(base, inputs, mode);
+  return formatFiles(base, inputs, mode, settings);
 }
 
 // 終了コードは 0・1・2 のどれかにする (markdownlint の JS の設定が process.exitCode を変えても、結果で上書きする)。

@@ -6,26 +6,18 @@ import * as nodeModule from "node:module";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+// 古い導入先で本体だけをコピーして起動した場合は、指定された runtime の方言表を使う。
+const flavorModule = new URL("./flavors.mjs", import.meta.url);
+const runtimeArgument = process.argv.indexOf("--runtime-dir");
+const flavorModuleUrl = !fs.existsSync(flavorModule) && runtimeArgument !== -1 && process.argv[runtimeArgument + 1]
+  ? pathToFileURL(path.resolve(process.argv[runtimeArgument + 1], "flavors.mjs"))
+  : flavorModule;
+const { flavors, getFlavor } = await import(flavorModuleUrl);
+
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const runtimes = new Map();
 const MAX_PASSES = 16;
 const MAX_FIXES = 4096;
-
-const parserOptions = {
-  extension: {
-    descriptionLists: true,
-    table: true,
-    strikethrough: true,
-    autolink: true,
-    tasklist: true,
-    footnotes: true,
-    multilineBlockQuotes: true,
-    mathDollars: true,
-    mathCode: true,
-    alerts: true,
-  },
-  parse: { relaxedTasklistMatching: true, leaveFootnoteDefinitions: true },
-};
 
 const containers = new Set([
   "List", "Item", "TaskItem", "BlockQuote", "MultilineBlockQuote",
@@ -66,15 +58,6 @@ export const defaultDisabledCategories = Object.freeze(["heading_conversion", "e
 export const htmlCategory = "html";
 // loose のリストを詰めて tight にする (markdownlint の修正ではない分類)。既定で有効。
 export const tightListsCategory = "tight_lists";
-// 中の空白がそのまま描画に出る要素。整形でも中身を変えず、描画の比較でも原文のまま比べる。
-const whitespaceElements = Object.freeze(["pre", "textarea", "script", "style", "code", "kbd", "samp"]);
-// 前後の空白が描画に出ない要素 (ブロック要素・表の要素・<br>)。描画の比較では、このタグに接する空白を比べない。
-const blockElements = new Set([
-  "address", "article", "aside", "blockquote", "body", "br", "caption", "center", "col", "colgroup", "dd", "details",
-  "dialog", "dir", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5",
-  "h6", "head", "header", "hgroup", "hr", "html", "legend", "li", "main", "menu", "nav", "ol", "optgroup", "option", "p",
-  "pre", "search", "section", "summary", "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr", "ul",
-]);
 // js-beautify の設定。字下げは 2 つで、折り返さず、空行を足さない (HTML のブロックは空行で終わるため)。
 // テンプレートの記法 ({{ }} など) は解釈しない。
 const beautifyOptions = Object.freeze({
@@ -131,29 +114,6 @@ const limitedRules = {
   // 同じ文書の見出しへのリンクの断片の大文字小文字。
   MD051: (node) => (node[0] === "Link" && node[1].url.startsWith("#") ? [node[0], { ...node[1], url: node[1].url.toLowerCase() }, node[2]] : node),
 };
-// Comrak に専用ノードが無い GitLab の記法。原文と出現順を変える修正は当てない。
-// GitLab は [[_toc_]] のような小文字の目次も目次として描くので、大文字小文字を区別しない。
-// 広めに当たっても検査が厳しくなるだけなので、参照は GitLab の規則より緩く拾う。
-const gitlabAtoms = new RegExp([
-  // 目次 [[_TOC_]] と、wiki のページへのリンク [[ページ]] (中の _ を * にすると別のページ名になる)。
-  String.raw`\[\[[^\]\r\n]+\]\]`, String.raw`\[TOC\]`, String.raw`\[~\]`, String.raw`\[\^[^\]\r\n]+\](?::)?`,
-  // include は行頭から書いたときだけ働くので、行頭の字下げごと守る。
-  String.raw`^[ \t]*::include\{[^\r\n]*?\}`, String.raw`::include\{[^\r\n]*?\}`,
-  String.raw`\{[+-][^\r\n]*?[+-]\}`, String.raw`\[[+-][^\r\n]*?[+-]\]`,
-  // 画像やリンクの直後の幅や高さの指定 (URL に括弧があっても、閉じ括弧と属性の境目で守る)。
-  String.raw`[)\]]\{[^}\r\n]*\}`,
-  // 課題 #123・マージリクエスト !123・エピック &123・スニペット $123。前に group/project や project が付く形も含める。
-  // \ で打ち消した記号は参照にならないので、守らない。
-  String.raw`(?<![\w&\\/.-])(?:[\w.-]+(?:\/[\w.-]+)*)?[#!&$]\d+(?:\+s?)?`,
-  // ラベル ~label・~"label"・~scope::label、マイルストーン %milestone・%"milestone" (前に project が付く形も)、ユーザー @user。
-  // 文末の句点や疑問符は名前に含めない (見出しの末尾の句読点を消す修正を拒まないため)。
-  String.raw`(?<![\w~\\/.-])(?:[\w.-]+(?:\/[\w.-]+)*)?~(?:"[^"\r\n]+"|[\p{L}\p{N}_](?:[\p{L}\p{N}_.?&:-]*[\p{L}\p{N}_&-])?)`,
-  String.raw`(?<![\w%\\/.-])(?:[\w.-]+(?:\/[\w.-]+)*)?%(?:"[^"\r\n]+"|[\p{L}\p{N}_](?:[\p{L}\p{N}_.-]*[\p{L}\p{N}_-])?)`,
-  // GitLab のユーザー名は末尾にピリオドを置けないので、文末の句点を参照に含めない。
-  String.raw`(?<![\w.+@\\-])@[\p{L}\p{N}_](?:[\p{L}\p{N}_.-]*[\p{L}\p{N}_-])?`,
-  // [issue:123] のような、種類を書いた参照 ([https://…] のような URL は除く)。
-  String.raw`\[[a-z_]+:(?!\/)[^\]\r\n]+\]`,
-].join("|"), "gimu");
 
 async function runtime(directory) {
   const resolved = path.resolve(directory);
@@ -316,8 +276,8 @@ function linesOf(source) {
   return lines;
 }
 
-function frontMatter(source, lines) {
-  const opening = /^(---|\+\+\+|;;;)[\w.+-]*[ \t]*$/u.exec(lines[0]?.content.replace(/^\uFEFF/u, "") || "");
+function frontMatter(source, lines, flavor) {
+  const opening = flavor.frontMatterOpening.exec(lines[0]?.content.replace(/^\uFEFF/u, "") || "");
   if (!opening) return null;
   for (let line = 1; line < lines.length; line++) {
     if (lines[line].content.trimEnd() === opening[1]) {
@@ -330,8 +290,8 @@ function frontMatter(source, lines) {
 
 // 解析に渡す文字列。front matter は行を保ったまま空白に伏せ、メタデータ中の見本を説明リストとして解析しない。
 // 閉じていない区切りは本文扱い。projection と semanticSnapshot が同じ文字列を渡し、解析の結果を共有する。
-function parsedText(source, lines) {
-  const matter = frontMatter(source, lines);
+function parsedText(source, lines, flavor) {
+  const matter = frontMatter(source, lines, flavor);
   return { matter, text: matter ? matter.raw.replace(/[^\r\n]/gu, " ") + source.slice(matter.end) : source };
 }
 
@@ -369,16 +329,28 @@ function sortedSpans(spans) {
   return { starts: sorted.map(([from]) => from), maxEnds };
 }
 
-function projection(source, parse) {
+// GFM の題つき alerts は GitHub と Comrak で解釈が違うため、行の全体を修正しない。
+function titledAlertRows(nodes, flavor) {
+  const rows = new Set();
+  if (!flavor.protectTitledAlerts) return rows;
+  for (const node of nodes) {
+    if (nodeType(node) !== "Alert" || node.data.value.Alert.title == null) continue;
+    const position = node.data.sourcepos;
+    for (let row = position.start.line; row <= position.end.line; row++) rows.add(row);
+  }
+  return rows;
+}
+
+function projection(source, parse, flavor) {
   const lines = linesOf(source);
-  const nodes = parse(parsedText(source, lines).text);
+  const nodes = parse(parsedText(source, lines, flavor).text);
   const replacements = [];
   const blankRequests = [];
   const itemLists = new Map();
   // 見立てた行ごとの、元の行の本来の接頭辞 (見立てた部分より前)。
   const realPrefixes = new Map();
   // コードや数式などの中身と GitLab の記法の範囲。ここに掛かる修正は 1 つずつ確かめる。
-  const protectedSpans = [...source.matchAll(gitlabAtoms)].map((match) => [match.index, match.index + match[0].length]);
+  const protectedSpans = [...source.matchAll(flavor.atoms)].map((match) => [match.index, match.index + match[0].length]);
   const headingRows = new Set();
   // 詰まった (tight) リストの、となり合う項目の間と、1 つの項目の中のとなり合うブロックの間の、下の側の行。
   // この行の前に空行を足すと、リストが loose になる。
@@ -409,7 +381,7 @@ function projection(source, parse) {
     if (type === "Heading") {
       for (let row = position.line; row <= (node.data.sourcepos.end?.line || position.line); row++) headingRows.add(row);
     }
-    if (type === "DescriptionDetails" && /[:~]/u.test(line.content[column] || "")) {
+    if (flavor.descriptionProjection && type === "DescriptionDetails" && /[:~]/u.test(line.content[column] || "")) {
       const item = nodes[node.parent]?.data.value.DescriptionItem;
       const marker = /^[:~][ \t]+/u.exec(line.content.slice(column));
       const offset = item?.marker_offset || 0;
@@ -455,8 +427,8 @@ function projection(source, parse) {
     realPrefixes.set(row, { text: original.content, base: original.content.length });
   }
   return {
-    source: projected, lines, itemLists, projectedRows, realPrefixes, protectedSpans: sortedSpans(protectedSpans), headingRows,
-    tightBoundaryRows,
+    source: projected, lines, itemLists, projectedRows, realPrefixes, headingRows, tightBoundaryRows,
+    protectedRows: titledAlertRows(nodes, flavor), protectedSpans: sortedSpans(protectedSpans),
     syntheticBlankRows: new Set(blankPrefixes.keys()),
   };
 }
@@ -543,55 +515,107 @@ function fixTarget(name) {
   return `custom:${lower}`;
 }
 
-function fixSelector(fixes) {
-  if (fixes !== undefined && fixes !== null && (typeof fixes !== "object" || Array.isArray(fixes))) {
-    throw new TypeError("整形する対象は、名前を真偽値に対応させた表にしてください。");
+function fixSelector(fixes, projectFixes, onWarning, projectConfigPath) {
+  if (onWarning !== undefined && typeof onWarning !== "function") {
+    throw new TypeError("onWarning は関数にしてください。");
   }
-  const chosen = new Map();
-  for (const [name, enabled] of Object.entries(fixes || {})) {
-    if (typeof enabled !== "boolean") throw new TypeError(`整形する対象 ${name} は true か false にしてください。`);
-    const target = fixTarget(name);
-    if (chosen.has(target) && chosen.get(target) !== enabled) {
-      throw new Error(`整形する対象 ${name} を、有効と無効の両方に指定しています。`);
+  const layer = (values, project) => {
+    if (values !== undefined && values !== null && (typeof values !== "object" || Array.isArray(values))) {
+      throw new TypeError("整形する対象は、名前を真偽値に対応させた表にしてください。");
     }
-    chosen.set(target, enabled);
+    const chosen = new Map();
+    for (const [name, enabled] of Object.entries(values || {})) {
+      if (typeof enabled !== "boolean") throw new TypeError("整形する対象 " + name + " は true か false にしてください。");
+      let target;
+      try {
+        target = fixTarget(name);
+      } catch (error) {
+        if (!project) throw error;
+        onWarning?.(error.message + " この指定は無視します。");
+        continue;
+      }
+      if (chosen.has(target) && chosen.get(target) !== enabled) {
+        throw new Error("整形する対象 " + name + " を、有効と無効の両方に指定しています。");
+      }
+      chosen.set(target, enabled);
+    }
+    return chosen;
+  };
+  const argumentLayer = layer(fixes, false);
+  const projectError = (error) => projectConfigPath ? new Error(`${projectConfigPath}: ${error.message}`, { cause: error }) : error;
+  let projectLayer;
+  try {
+    projectLayer = layer(projectFixes, true);
+  } catch (error) {
+    throw projectError(error);
   }
-  // ルール名の指定 > 分類の指定 > 既定。HTML のブロックの整形と、loose のリストを詰めることは markdownlint の修正ではないので、
-  // select.html と select.tightLists で別に返す。
+  const layers = [argumentLayer, projectLayer];
+  // 引数の層 > ファイルの層 > 既定。同じ層では、ルール名を分類名より先に見る。HTML のブロックの整形と、loose のリストを
+  // 詰めることは markdownlint の修正ではないので、select.html と select.tightLists で別に返す。
   const select = (fix) => {
     const id = ruleId(fix);
     if (Object.hasOwn(ruleAliases, id)) {
-      if (chosen.has(`rule:${id}`)) return chosen.get(`rule:${id}`);
       const category = ruleCategories.get(id);
-      if (!category) return false;
-      return chosen.get(`category:${category}`) ?? !defaultDisabledCategories.includes(category);
+      for (const chosen of layers) {
+        if (chosen.has("rule:" + id)) return chosen.get("rule:" + id);
+        if (category && chosen.has("category:" + category)) return chosen.get("category:" + category);
+      }
+      return category ? !defaultDisabledCategories.includes(category) : false;
     }
     // 表に無い組み込みルールの修正は、確かめるまで当てない。
     if (/^MD\d+$/u.test(id)) return false;
-    // カスタムルールは、どの名前 (別名) で指定してもよい。別名どうしで食い違えば整形しない。
-    const values = new Set(fix.ruleNames.map((name) => chosen.get(`custom:${name.toLowerCase()}`)).filter((value) => value !== undefined));
-    if (values.size > 1) throw new Error(`整形する対象 ${fix.ruleNames.join("・")} を、有効と無効の両方に指定しています。`);
-    return values.size ? [...values][0] : true;
+    for (const [index, chosen] of layers.entries()) {
+      const values = new Set(fix.ruleNames.map((name) => chosen.get("custom:" + name.toLowerCase())).filter((value) => value !== undefined));
+      if (values.size > 1) {
+        const error = new Error(`整形する対象 ${fix.ruleNames.join("・")} を、有効と無効の両方に指定しています。`);
+        throw index === 1 ? projectError(error) : error;
+      }
+      if (values.size) return [...values][0];
+    }
+    return true;
   };
-  select.html = chosen.get(`category:${htmlCategory}`) ?? true;
-  select.tightLists = chosen.get(`category:${tightListsCategory}`) ?? true;
+  // CLI2 は登録名の一覧を返さないため、カスタムルールは全パスの診断の名前で照合する。
+  const reportedNames = new Set();
+  select.observeRules = (results) => {
+    for (const result of results) {
+      for (const name of result.ruleNames) reportedNames.add(name.toLowerCase());
+      for (const [index, chosen] of layers.entries()) {
+        const values = new Set(result.ruleNames.map((name) => chosen.get("custom:" + name.toLowerCase())).filter((value) => value !== undefined));
+        if (values.size > 1) {
+          const error = new Error("整形する対象 " + result.ruleNames.join("・") + " を、有効と無効の両方に指定しています。");
+          throw index === 1 ? projectError(error) : error;
+        }
+      }
+    }
+  };
+  select.warnUnknown = () => {
+    for (const name of Object.keys(projectFixes || {})) {
+      const key = "custom:" + name.toLowerCase();
+      if (projectLayer.has(key) && !reportedNames.has(name.toLowerCase())) {
+        onWarning?.("整形する対象 " + name + " は、この文書の診断にありません。この指定は無視します。");
+      }
+    }
+  };
+  const categoryChoice = (category) => layers.map((chosen) => chosen.get("category:" + category)).find((value) => value !== undefined);
+  select.html = categoryChoice(htmlCategory) ?? true;
+  select.tightLists = categoryChoice(tightListsCategory) ?? true;
   return select;
 }
 
 // 見出しにする修正 (MD018・MD020) を当ててよい行か。
-function convertibleHeading(fix, projected, selection) {
+function convertibleHeading(fix, projected, selection, flavor) {
   if (!headingConversionRules.has(ruleId(fix))) return true;
   const [row] = fixPosition(fix);
   const line = projected.lines[row - 1];
-  // GitLab の課題の参照 (#123) と、既にある見出し (# C# など) は見出しにしない。
-  if (!line || /^#+\d/u.test(line.content) || projected.headingRows.has(row)) return false;
+  // 課題の参照 (#123) と、既にある見出し (# C# など) は見出しにしない。
+  if (!line || flavor.unconvertibleHeading.test(line.content) || projected.headingRows.has(row)) return false;
   // 範囲整形では、見出しになる文字 (行末の空白を除く) が全部選択に入っているときだけ見出しにする。
   return !selection || line.start + line.content.trimEnd().length <= selection.end;
 }
 
-function semanticSnapshot(source, parse) {
+function semanticSnapshot(source, parse, flavor) {
   const lines = linesOf(source);
-  const { matter, text } = parsedText(source, lines);
+  const { matter, text } = parsedText(source, lines, flavor);
   const nodes = parse(text);
   if (!Array.isArray(nodes) || !nodes.length) throw new Error("Markdown を解析できません。");
   const descriptions = [];
@@ -612,7 +636,9 @@ function semanticSnapshot(source, parse) {
         type === "Math" ? sourceSlice(source, lines, nodes[index].data.sourcepos) : null]);
     }
   }
-  const atoms = [...source.matchAll(gitlabAtoms)].map((match) => match[0]);
+  const protectedRows = titledAlertRows(nodes, flavor);
+  if (protectedRows.size) literals.push(["TitledAlerts", [...protectedRows].map((row) => lines[row - 1].content + lines[row - 1].ending)]);
+  const atoms = [...source.matchAll(flavor.atoms)].map((match) => match[0]);
   // loose (緩い検査) は最初の文書と比べ続ける。tree (構文木の全体) は、受け付けた文書ごとに取り直す。
   return {
     loose: JSON.stringify({ frontMatter: matter?.raw || null, descriptions, literals, atoms, lists }),
@@ -622,9 +648,9 @@ function semanticSnapshot(source, parse) {
 }
 
 // 保護範囲 (コード・数式・HTML) のノードの位置と、緩い検査に入る中身。近道 G の判定に使う。
-function literalView(source, parse) {
+function literalView(source, parse, flavor) {
   const lines = linesOf(source);
-  const nodes = parse(parsedText(source, lines).text);
+  const nodes = parse(parsedText(source, lines, flavor).text);
   // ノードの型と行の範囲の木。修正の前後で同じなら、ブロックの構造 (どの行がどのブロックに入るか) も同じ。
   const shape = (index) => {
     const position = nodes[index].data.sourcepos;
@@ -689,18 +715,18 @@ function blockLiteral(text, parseBlock) {
 //    中身が変わる (中身の行が閉じのフェンスになっても、全文の中のブロックの中身は短くなる)
 // どれにも当たらないまとめは、今までどおり 1 つずつ全文の解析で確かめる。
 // 判定は今の文書 (current) に対するもの。使う前に今の文書が変われば、判定し直す (近くの文字が変わると結果が変わりうる)。
-function doomedProtectedGroups(groups, current, originalAtoms, parse, parseBlock) {
+function doomedProtectedGroups(groups, current, originalAtoms, parse, parseBlock, flavor) {
   const doomed = new Set();
   const rest = [];
   for (const group of groups) {
     const candidate = applyFixes(current, [...group].sort(descendingFix));
     if (candidate === current) continue;
-    const atoms = JSON.stringify([...candidate.matchAll(gitlabAtoms)].map((match) => match[0]));
+    const atoms = JSON.stringify([...candidate.matchAll(flavor.atoms)].map((match) => match[0]));
     if (atoms !== originalAtoms) doomed.add(group);
     else rest.push(group);
   }
   if (!rest.length) return doomed;
-  const before = literalView(current, parse);
+  const before = literalView(current, parse, flavor);
   const touched = new Map();
   for (const group of rest) {
     const indices = new Set();
@@ -763,7 +789,7 @@ function doomedProtectedGroups(groups, current, originalAtoms, parse, parseBlock
   }
   const remaining = rest.filter((group) => units.has(group) && !overlapping.has(group));
   if (remaining.length < 2) return doomed;
-  const after = literalView(applyFixes(current, remaining.flat().sort(descendingFix)), parse);
+  const after = literalView(applyFixes(current, remaining.flat().sort(descendingFix)), parse, flavor);
   if (before.shape !== after.shape || before.literals.length !== after.literals.length) return doomed;
   const remainingOwners = new Map();
   for (const group of remaining) for (const index of touched.get(group)) remainingOwners.set(index, (remainingOwners.get(index) || 0) + 1);
@@ -855,7 +881,7 @@ function applyFixes(source, errors) {
 // 試験用。applyFixes が applyFix を順に当てたときと同じ結果を返すことを確かめる。
 export const internals = Object.freeze({ applyFix, applyFixes });
 
-async function lint(source, { main }, { filename, cwd, config, stats }) {
+async function lint(source, { main }, { filename, cwd, config, stats, flavor, observeRules }) {
   if (stats) stats.lints++;
   let results = [];
   const errors = [];
@@ -881,6 +907,7 @@ async function lint(source, { main }, { filename, cwd, config, stats }) {
       optionsDefault: typeof config === "object" && config !== null ? { config } : undefined,
       optionsOverride: {
         fix: false,
+        ...(flavor.overrideLintFrontMatter ? { frontMatter: flavor.lintFrontMatter.source } : {}),
         noBanner: true,
         noProgress: true,
         outputFormatters: [[({ results: captured }) => { results = captured; }]],
@@ -897,7 +924,9 @@ async function lint(source, { main }, { filename, cwd, config, stats }) {
     throw new Error("Markdownlint のルール実行に失敗しました。");
   }
   // Windows のドライブ文字の大小が違っても同じファイルと見なす。
-  return results.filter((result) => result.fixInfo && path.relative(path.resolve(cwd, result.fileName), filename) === "");
+  const ownResults = results.filter((result) => path.relative(path.resolve(cwd, result.fileName), filename) === "");
+  observeRules?.(ownResults);
+  return ownResults.filter((result) => result.fixInfo);
 }
 
 function isInside(directory, file) {
@@ -1001,7 +1030,8 @@ function normalizedTag(token) {
 // 1. 空白がそのまま出る要素 (whitespaceElements と、style に white-space を書いた要素) の中の文字は原文のまま
 // 2. それ以外の文字は、ASCII の空白の並びを空白 1 つに畳む。ブロック要素のタグ・<br>・文書の端に接する空白は消す
 // 3. インライン要素どうしの間の空白は有無を残す (<b>a</b><i>b</i> と <b>a</b> <i>b</i> は別の値)。コメントは原文のまま
-function normalizedHtml(html) {
+function normalizedHtml(html, flavor = flavors.glfm) {
+  const { blockElements, whitespaceElements } = flavor;
   const items = [];
   // 空白がそのまま出る要素の、開いているものの名前と、同じ名前の入れ子の深さ。
   const exact = [];
@@ -1049,7 +1079,8 @@ function normalizedHtml(html) {
 // 整形の対象にできる HTML のブロックと、整形した行。js-beautify が直すものが無ければ空。
 // 対象は一般のタグで始まるブロック (種類 6・7) だけ。pre・script・style・textarea で始まるもの (種類 1) とコメント (種類 2) などは変えない。
 // ブロックの各行が「入れ物の接頭辞 + literal の行」になっているものだけを扱う (タブや、揃わない接頭辞の続きの行があれば見送る)。
-function htmlBlockEdits(source, lines, nodes, selection, beautify) {
+function htmlBlockEdits(source, lines, nodes, selection, beautify, flavor) {
+  const protectedRows = titledAlertRows(nodes, flavor);
   const ending = preferredEnding(source);
   const edits = [];
   for (const node of nodes) {
@@ -1057,6 +1088,8 @@ function htmlBlockEdits(source, lines, nodes, selection, beautify) {
     const { block_type: blockType, literal } = node.data.value.HtmlBlock;
     const position = node.data.sourcepos;
     if ((blockType !== 6 && blockType !== 7) || !position?.start.line || !position?.end.line) continue;
+    if (Array.from({ length: position.end.line - position.start.line + 1 }, (_, index) => position.start.line + index)
+      .some((row) => protectedRows.has(row))) continue;
     const rows = literal.replace(/(?:\r\n|\r|\n)$/u, "").split(/\r\n|\r|\n/u);
     const first = position.start.line;
     if (rows.length !== position.end.line - first + 1) continue;
@@ -1074,7 +1107,7 @@ function htmlBlockEdits(source, lines, nodes, selection, beautify) {
     // 範囲整形では、ブロックの全体 (行頭の入れ物の接頭辞を除く) が選択に入るときだけ。
     if (selection && (start + prefixes[0].length < selection.start || end > selection.end)) continue;
     // 中身を変えない要素の表は、整形器が書き換えても次のブロックに残らないよう毎回作る。
-    const formatted = beautify(rows.join("\n"), { ...beautifyOptions, content_unformatted: [...whitespaceElements] });
+    const formatted = beautify(rows.join("\n"), { ...beautifyOptions, content_unformatted: [...flavor.whitespaceElements] });
     if (typeof formatted !== "string") throw new Error("HTML の整形器が文字列を返しませんでした。");
     const output = formatted.split(/\r\n|\r|\n/u);
     // 空の行はブロックを終わらせ、後ろの行を Markdown にするので当てない。
@@ -1120,23 +1153,23 @@ function applyHtmlEdits(source, edits) {
 // まとめて当てて 1 回で確かめ、変わるときだけ半分に分けて原因のブロックを外す。ブロックどうしは重ならない。
 // Markdown をはさんだ断片 (<details> と </details> の間に本文があるものなど) は、断片ごとに入れ物の字下げから整形する。
 // 前の断片の深さを持ち越して 1 行目を 4 つ以上字下げすると、空行の後ではコードブロックになるため。
-function formatHtmlBlocks(source, { parse, render, beautify, selection, exhaustive }) {
+function formatHtmlBlocks(source, { parse, render, beautify, selection, exhaustive, flavor }) {
   if (!exhaustive && !htmlBlockHint.test(source)) return source;
   const lines = linesOf(source);
-  const edits = htmlBlockEdits(source, lines, parse(parsedText(source, lines).text), selection, (text, settings) => beautify()(text, settings));
+  const edits = htmlBlockEdits(source, lines, parse(parsedText(source, lines, flavor).text), selection, (text, settings) => beautify()(text, settings), flavor);
   if (!edits.length) return source;
   const htmlTree = (node) => (node[0] === "HtmlBlock"
-    ? [node[0], { block_type: node[1].block_type, html: normalizedHtml(node[1].literal) }, node[2]]
+    ? [node[0], { block_type: node[1].block_type, html: normalizedHtml(node[1].literal, flavor) }, node[2]]
     : node);
   const snapshot = (text, applied) => {
     const textLines = linesOf(text);
-    const { matter, text: parsed } = parsedText(text, textLines);
+    const { matter, text: parsed } = parsedText(text, textLines, flavor);
     const nodes = parse(parsed);
     if (applied && !htmlEditsLanded(nodes, applied)) return null;
     return JSON.stringify([
       matter?.raw || null,
-      [...text.matchAll(gitlabAtoms)].map((match) => match[0]),
-      normalizedHtml(render(parsed)),
+      [...text.matchAll(flavor.atoms)].map((match) => match[0]),
+      normalizedHtml(render(parsed), flavor),
       mapTree(canonicalNode(nodes, 0), htmlTree),
     ]);
   };
@@ -1241,10 +1274,10 @@ function sameTreeExceptTight(before, after, targets) {
 // loose のリストを詰めて tight にする (分類 tight_lists)。当てた後の構文木が、対象のリストの tight のほかはノードごとに
 // 同じものだけを当てる (描画は、対象の項目の段落を包む <p> が無くなることだけが変わる)。まとめて当てて 1 回で確かめ、
 // 違うときだけ半分に分けて原因のリストを外す。リストどうしの消す行は重ならない。
-function tightenLists(source, { parse, selection, exhaustive }) {
+function tightenLists(source, { parse, selection, exhaustive, flavor }) {
   if (!exhaustive && !looseListHint.test(source)) return source;
   const lines = linesOf(source);
-  const before = parse(parsedText(source, lines).text);
+  const before = parse(parsedText(source, lines, flavor).text);
   const edits = listTighteningEdits(lines, before, selection);
   if (!edits.length) return source;
   const accepted = [];
@@ -1253,7 +1286,7 @@ function tightenLists(source, { parse, selection, exhaustive }) {
     if (!batch.length) return;
     const chosen = [...accepted, ...batch];
     const candidate = apply(chosen);
-    if (sameTreeExceptTight(before, parse(parsedText(candidate, linesOf(candidate)).text), new Set(chosen.map((edit) => edit.list)))) {
+    if (sameTreeExceptTight(before, parse(parsedText(candidate, linesOf(candidate), flavor).text), new Set(chosen.map((edit) => edit.list)))) {
       accepted.push(...batch);
       return;
     }
@@ -1273,8 +1306,10 @@ export async function formatMarkdown(source, options = {}) {
   if (!options.filename || !path.isAbsolute(options.filename)) {
     throw new Error("整形対象の絶対ファイル名を指定してください。");
   }
+  const flavor = getFlavor(options.flavor);
+  const { parserOptions } = flavor;
   const filename = path.normalize(options.filename);
-  const settings = { ...options, filename, cwd: path.resolve(options.cwd || path.dirname(filename)) };
+  const settings = { ...options, flavor, filename, cwd: path.resolve(options.cwd || path.dirname(filename)) };
   if (options.range && (!Array.isArray(options.range.start) || !Array.isArray(options.range.end) ||
       !Number.isInteger(options.range.start[0]) || !Number.isInteger(options.range.end[0]) ||
       options.range.start[0] < 1 || options.range.end[0] < options.range.start[0] ||
@@ -1285,7 +1320,8 @@ export async function formatMarkdown(source, options = {}) {
   }
   const selection = selectedRange(source, options.range);
   if (selection && selection.end < selection.start) throw new Error("整形範囲の開始と終了が逆です。");
-  const selected = fixSelector(options.fixes);
+  const selected = fixSelector(options.fixes, options.projectFixes, options.onWarning, options.projectConfigPath);
+  settings.observeRules = selected.observeRules;
   const dependencies = await runtime(options.runtimeDir || scriptDirectory);
   // 試験用: exhaustive は近道 (修正候補が無いときの早い終わりと、保護範囲の修正と、詰まったリストに空行を足す修正を
   // 解析せずに拒むこと、HTML のブロックの無い文書を解析せずに見分けること) を使わない。stats には、文書全体の Comrak の解析 (parses)・コードブロックの行だけの
@@ -1314,22 +1350,26 @@ export async function formatMarkdown(source, options = {}) {
   };
   const render = (text) => {
     if (stats) stats.renders++;
-    return dependencies.markdownToHTML(text, { ...parserOptions, render: { unsafe: true } });
+    return dependencies.markdownToHTML(text, flavor.renderOptions);
   };
   const beautify = () => options.beautifyHtml || htmlBeautifier(options.runtimeDir || scriptDirectory);
   // markdownlint の修正が終わった文書に、HTML のブロックの整形を最後に 1 回当てる (lint は HTML の中を変えないので、
   // 整形した HTML を崩さない。lint の修正でできた HTML のブロックも、同じ保存で整形する)。
-  const finish = (text) => (selected.html
-    ? formatHtmlBlocks(text, { parse, render, beautify, selection, exhaustive })
-    : text);
+  const finish = (text) => {
+    const result = selected.html
+      ? formatHtmlBlocks(text, { parse, render, beautify, selection, exhaustive, flavor })
+      : text;
+    selected.warnUnknown();
+    return result;
+  };
   // loose のリストを最初に詰める。詰めた文書を、この後の修正の基準 (緩い検査の最初の文書) にする。詰める処理は構文木を
   // ノードごとに確かめるので、基準を替えても、守る記法・リテラル・ほかのリストの tight は元の文書と同じ。
   // markdownlint の修正 (MD031・MD032 など) が項目の中に空行を足して loose に戻すものは、緩い検査のリストの並びで落ちる。
-  const start = selected.tightLists ? tightenLists(source, { parse, selection, exhaustive }) : source;
+  const start = selected.tightLists ? tightenLists(source, { parse, selection, exhaustive, flavor }) : source;
   const snapshots = new Map();
   const snapshotOf = (text) => {
     if (!snapshots.has(text)) {
-      snapshots.set(text, semanticSnapshot(text, parse));
+      snapshots.set(text, semanticSnapshot(text, parse, flavor));
       if (snapshots.size > 4) snapshots.delete(snapshots.keys().next().value);
     }
     return snapshots.get(text);
@@ -1357,10 +1397,10 @@ export async function formatMarkdown(source, options = {}) {
     let fixes = await lint(current, dependencies, settings);
     // 選ばれる修正が無く、説明リストの印も無い文書は、解析せずにそのまま返す (印があれば、引用に見立てた lint が修正を足しうる)。
     // 印の判定は広めにし、疑わしいときは今までどおり解析する。
-    if (pass === 0 && !exhaustive && !fixes.some((fix) => selected(fix)) && !/^[ \t>]*[:~][ \t]/mu.test(current)) {
+    if (pass === 0 && !exhaustive && !fixes.some((fix) => selected(fix)) && !flavor.descriptionHint?.test(current)) {
       return finish(current);
     }
-    const projected = projection(current, parse);
+    const projected = projection(current, parse, flavor);
     if (projected.source !== current) {
       // リストの表記は正しい階層を持つ引用版を基準とし、元の解析との往復を防ぐ。
       // 説明の中の行の字下げ (MD005 / MD007) も引用版だけで見る。元の解析は説明リストを知らず、
@@ -1373,7 +1413,7 @@ export async function formatMarkdown(source, options = {}) {
         .filter(Boolean));
     }
     // 選ばれていない修正と、見出しにしてはいけない行の修正は、まとめを作る前に外す。
-    fixes = fixes.filter((fix) => selected(fix) && convertibleHeading(fix, projected, selection));
+    fixes = fixes.filter((fix) => selected(fix) && convertibleHeading(fix, projected, selection, flavor) && !projected.protectedRows.has(fixPosition(fix)[0]));
     // 詰まったリストの項目の間や項目の中のブロックの間に空行を足す修正 (MD031・MD032 など) は、リストを loose にするので
     // 必ず落ちる。全文を解析して確かめずに外す (近道 L)。tight_lists で詰めたリストには、markdownlint が空行を求める所が多く、
     // 確かめると半分に分ける解析が修正の数だけ増える。
@@ -1466,7 +1506,7 @@ export async function formatMarkdown(source, options = {}) {
         if (protectedGroups.has(group)) {
           flush();
           if (!exhaustive && judged !== current) {
-            doomed = doomedProtectedGroups(protectedList.slice(protectedIndex), current, originalOf().atoms, parse, parseBlock);
+            doomed = doomedProtectedGroups(protectedList.slice(protectedIndex), current, originalOf().atoms, parse, parseBlock, flavor);
             judged = current;
           }
           protectedIndex++;

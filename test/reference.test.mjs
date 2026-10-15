@@ -33,28 +33,30 @@ function addExample(section, { info, literal }, pending) {
   const [language, kind, ...flags] = info.split(/\s+/u);
   const fixes = Object.fromEntries(flags.filter((flag) => flag.startsWith("fixes="))
     .flatMap((flag) => flag.slice("fixes=".length).split(",")).map((name) => [name, true]));
+  const flavor = flags.find((flag) => flag.startsWith("flavor="))?.slice("flavor=".length);
+  assert.ok(flavor === undefined || flavor === "gfm" || flavor === "glfm", `${section.id}: 方言は gfm か glfm`);
   const input = flags.includes("末尾の改行なし") ? literal.replace(/\n$/u, "") : literal;
   if (language === "json" && kind === "markdownlint") section.config = JSON.parse(literal);
-  else if (kind === "整形前") return { input, fixes, config: section.config };
+  else if (kind === "整形前") return { input, fixes, flavor, config: section.config };
   else if (kind === "整形後") {
     assert.ok(pending, `${section.id}: 整形後 follows 整形前`);
     section.examples.push({ ...pending, expected: literal });
-  } else if (kind === "変わらない") section.examples.push({ input, expected: input, fixes, config: section.config });
+  } else if (kind === "変わらない") section.examples.push({ input, expected: input, fixes, flavor, config: section.config });
   else assert.fail(`${section.id}: unknown code block "${info}"`);
   return undefined;
 }
 
 // ### MDxxx の節ごとに、例 (整形前と整形後・変わらない) と markdownlint の設定を集める。
-// markdownlint のルールでない分類の節 (## HTML のブロック・## loose のリストを詰める) の下の ### の節は、
-// html:<見出し>・tight:<見出し> の名前で集める。
-const categorySections = new Map([["HTML のブロック", "html"], ["loose のリストを詰める", "tight"]]);
+// markdownlint のルールでない分類の節 (## HTML のブロック・## loose のリストを詰める) と方言の違いの節の下の ### の節は、
+// html:<見出し>・tight:<見出し>・gfm:<見出し> の名前で集める。
+const categorySections = new Map([["HTML のブロック", "html"], ["loose のリストを詰める", "tight"], ["GFM と GLFM の違い", "gfm"]]);
 const sections = new Map();
 let table;
 let withoutFixes;
 {
   let section;
   let pending;
-  let prefix;
+  let group;
   for (const index of walk(nodes)) {
     const node = nodes[index];
     const type = typeOf(node);
@@ -62,10 +64,14 @@ let withoutFixes;
     if (type === "Paragraph" && textOf(nodes, index).startsWith("自動修正の無いルール:")) {
       withoutFixes = textOf(nodes, index).match(/MD\d{3}/gu);
     }
-    if (type === "Heading" && node.data.value.Heading.level === 2) prefix = categorySections.get(textOf(nodes, index));
+    if (type === "Heading" && node.data.value.Heading.level === 2) {
+      group = categorySections.get(textOf(nodes, index));
+      section = undefined;
+      pending = undefined;
+    }
     if (type === "Heading" && node.data.value.Heading.level === 3) {
-      const id = textOf(nodes, index).match(/^MD\d{3}/u)?.[0] ?? (prefix ? `${prefix}:${textOf(nodes, index)}` : undefined);
-      assert.ok(id && !sections.has(id), `見出し ${textOf(nodes, index)} はルールか分類の節で、重ならない`);
+      const id = textOf(nodes, index).match(/^MD\d{3}/u)?.[0] ?? (group ? `${group}:${textOf(nodes, index)}` : undefined);
+      assert.ok(id && !sections.has(id), `見出し ${textOf(nodes, index)} はルール・分類・方言の節で、重ならない`);
       section = { id, config: {}, examples: [] };
       sections.set(id, section);
     }
@@ -95,8 +101,8 @@ async function assertExamples(t, documented) {
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const filename = path.join(cwd, "example.md");
   for (const [id, section] of documented) {
-    for (const [number, { input, expected, fixes, config }] of section.examples.entries()) {
-      const options = { filename, cwd, runtimeDir, fixes, config: { default: true, ...config } };
+    for (const [number, { input, expected, fixes, flavor, config }] of section.examples.entries()) {
+      const options = { filename, cwd, runtimeDir, fixes, flavor, config: { default: true, ...config } };
       const name = `${id} example ${number + 1}`;
       const output = await formatMarkdown(visible(input), options);
       assert.equal(output, visible(expected), name);
@@ -147,6 +153,12 @@ test("the tight list section shows the category and examples that tighten and th
   assert.ok(examples.some(({ input, expected }) => input !== expected), "詰める例がある");
   assert.ok(examples.some(({ input, expected }) => input === expected), "変わらない例がある");
   assert.equal(tightListsCategory, "tight_lists");
+});
+
+test("方言の違いの節には GFM を指定した整形と保持の例がある", () => {
+  const examples = [...sections].filter(([id]) => id.startsWith("gfm:")).flatMap(([, section]) => section.examples);
+  assert.ok(examples.some(({ flavor, input, expected }) => flavor === "gfm" && input !== expected), "GFM で整形する例がある");
+  assert.ok(examples.some(({ flavor, input, expected }) => flavor === "gfm" && input === expected), "GFM で保持する例がある");
 });
 
 test("every example in the reference formats exactly as documented with all markdownlint rules enabled", async (t) => {
