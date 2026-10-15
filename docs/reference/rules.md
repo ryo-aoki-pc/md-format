@@ -1,17 +1,18 @@
-# GLFM 整形器のルール一覧
+# 整形のルール一覧
 
-保存時と `<leader>cf` の Markdown の整形 (`glfm_markdownlint`、[format.mjs](../../format.mjs)) が、
-markdownlint の各ルールで Markdown をどう変えるかの一覧。埋め込んだ HTML の整形は、最後の [HTML のブロック](#html-のブロック) にある。
+`mdfmt`（[format.mjs](../../format.mjs)。Neovim の保存時と `<leader>cf` の整形も同じ）が、
+markdownlint の各ルールで Markdown をどう変えるかの一覧。loose のリストを詰めることは [loose のリストを詰める](#loose-のリストを詰める)、
+埋め込んだ HTML の整形は [HTML のブロック](#html-のブロック) にある。
 
-- 整形する対象は、[lua/plugins/lang-markdown.lua](../../lua/plugins/lang-markdown.lua) の `format_fixes` の表で選ぶ。
-  下の分類名かルール名 (`MD026`・`no-trailing-punctuation`) を `true`・`false` にする。書かない分類は既定のまま。
-  ルール名の指定は分類の指定より優先する。名前の大文字小文字は区別しない。プロジェクトのカスタムルールも、その名前で選べる (既定で有効)
-- `format_fixes` は整形だけを選ぶ。markdownlint の診断 (nvim-lint) は変わらない。診断ごと止めるときは、同じファイルの `disabled_rules` に書く
-- どの設定でも、Comrak で読んだ構造 (見出し・段落・リストの所属と開始番号・強調・リンク・強制改行など) が変わる修正と、
-  GitLab の記法 (`#123`・`~label`・`@user` などの参照・`[[_TOC_]]` と wiki のリンク・`::include`・画像の `{width=…}` など) を変える修正は当てない。
-  ただし、見出し・強調・リンクを作る修正 (`heading_conversion`・`emphasis_spaces`・`reversed_links`) は、有効にすると構造を変えて当てる
-- 知らない名前や、同じルールを有効と無効の両方に書いたときは、整形せずにエラーにする (バッファは変わらない)
-- 例は markdownlint の既定の設定 (全ルール有効) で整形した結果。`␣` は空白、`⇥` はタブを表す (見えない文字を見えるようにするため)。
+- 整形する対象は、`mdfmt` の `--enable-fixes`・`--disable-fixes` に、下の分類名かルール名（`MD026`・`no-trailing-punctuation`）を
+  カンマで区切って渡して選ぶ。書かない分類は既定のまま。Neovim（LazyVimStarter）では `lua/plugins/lang-markdown.lua` の `format_fixes` の表で選ぶ
+- ルール名の指定は分類の指定より優先する。名前の大文字小文字は区別しない。プロジェクトのカスタムルールも、その名前で選べる（既定で有効）
+- 選ぶのは整形だけ。markdownlint の診断は変わらない。診断ごと止めるときは、markdownlint の設定でルールを無効にする
+- どの設定でも、Comrak で読んだ構造（見出し・段落・リストの所属と開始番号・リストの tight・強調・リンク・強制改行など）が変わる修正と、
+  GitLab の記法（`#123`・`~label`・`@user` などの参照・`[[_TOC_]]` と wiki のリンク・`::include`・画像の `{width=…}` など）を変える修正は当てない。
+  ただし、見出し・強調・リンクを作る修正（`heading_conversion`・`emphasis_spaces`・`reversed_links`）は、有効にすると構造を変えて当てる（リストの tight は変えない）
+- 知らない名前や、同じルールを有効と無効の両方に書いたときは、整形せずにエラーにする（文書は変わらない）
+- 例は markdownlint の既定の設定（全ルール有効）で整形した結果。`␣` は空白、`⇥` はタブを表す（見えない文字を見えるようにするため）。
   [test/reference.test.mjs](../../test/reference.test.mjs) が、この文書の例をすべて整形し直して確かめる
 
 ## 一覧
@@ -861,7 +862,7 @@ GitLab のラベルの参照 (`~"javascript"`) の中は変えない (参照先�
 
 ## HTML のブロック
 
-分類 `html`、既定で有効。markdownlint のルールではないので、上の一覧の表には入れない。止めるときは `format_fixes` に `html = false` と書く。
+分類 `html`、既定で有効。markdownlint のルールではないので、上の一覧の表には入れない。止めるときは `html` を無効にする（`--disable-fixes html`）。
 
 - 行頭のタグで始まり空行で終わる HTML のブロックを、[js-beautify](https://github.com/beautifier/js-beautify) でタグの入れ子に合わせて 2 つずつ字下げする。
   ブロック要素 (`<tr>`・`<td>`・`<li>` など) は 1 行ずつにし、インライン要素 (`<b>`・`<code>` など) と文の行は分けない。折り返さない
@@ -1111,7 +1112,7 @@ Markdown をはさんだ入れ子は、内側の断片も行頭から字下げ�
 
 ## loose のリストを詰める
 
-分類 `tight_lists`、既定で有効。markdownlint のルールではないので、上の一覧の表には入れない。止めるときは `tight_lists` を無効にする。
+分類 `tight_lists`、既定で有効。markdownlint のルールではないので、上の一覧の表には入れない。止めるときは `tight_lists` を無効にする（`--disable-fixes tight_lists`）。
 
 - 項目の間か、1 つの項目の中のブロックの間に空行のあるリスト (loose のリスト) は、項目の段落が `<p>` で包まれ、項目の間が広く描かれる。
   その空行を消して、詰まった (tight の) リストにする。描画で変わるのは、項目の段落を包む `<p>` が無くなることだけ

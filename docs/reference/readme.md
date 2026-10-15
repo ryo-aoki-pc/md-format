@@ -1,0 +1,87 @@
+# md-format の設計
+
+`mdfmt` の設計の理由と取り決め。使い方は [README](../../README.md)、ルールごとの例は [rules.md](rules.md)、検証記録は [../verification/readme.md](../verification/readme.md) にある。
+
+この整形器は、LazyVimStarter の `tools/glfm-format`（`custom` の 7826bd8 まで）から移した。それまでの設計の記録は、LazyVimStarter の `docs/dev/architecture.md` と `docs/verification/setup.md` にある。
+
+## 整形の流れ
+
+`formatMarkdown`（[format.mjs](../../format.mjs)）は、次の順に整形する。
+
+1. **loose のリストを詰める**（分類 `tight_lists`）。当てた文書を、この後の修正の基準（緩い検査の最初の文書）にする
+2. **markdownlint の修正**。markdownlint-cli2 の公式 API で修正候補を集め、まとめて当てて Comrak で読み直し、確かめに落ちたまとめは半分に分けて原因を外す。修正が無くなるまで繰り返す（16 回まで）
+3. **HTML のブロックの整形**（分類 `html`）。修正が終わった文書に 1 回だけ当てる
+
+prettier は使わない。GLFM の数式（`$...$`）・複数行の脚注・`[[_TOC_]]` を壊し、HTML を 80 桁で折り返して閉じタグを足すため。
+
+## 確かめ方
+
+修正を当てた文書を Comrak（`comrak` の WebAssembly 版。GitLab の描画と同じ系統の解析器）で読み直し、次の 2 段で確かめる。
+
+- **緩い検査**（最初の文書と比べ続ける）
+  - front matter の原文
+  - 説明リスト（GLFM）の構造
+  - リテラル（コード・数式・HTML・脚注など）の中身と、入れ物の中の位置
+  - GitLab の記法（`#123`・`~label`・`@user`・`[[_TOC_]]`・`::include`・`{width=…}` など）の原文と並び
+  - リストと説明の項目の tight の並び
+- **構文木の全体**（最後に受け付けた文書と比べる）
+  - 見出し・段落・リストの所属と開始番号・強調・リンク・強制改行など
+  - 文字は、HTML で同じに見える ASCII の空白の並びだけを畳む（全角空白は比べる）
+  - 変えてよい差が決まっている修正（MD026・MD039・MD044・MD051）は、その差だけを両方の木から消してから比べる
+- 見出し・強調・リンクを作る修正（MD011・MD018・MD020・MD037）とカスタムルールは、緩い検査だけで当てる（構文木では正しい修正と見分けられないため）。リストの tight の並びは緩い検査に入っているので、これらの修正もリストを loose にできない
+- 箇条書きの記号（MD004）と番号（MD029）は、リストごとにまとめて当てるか見送る
+
+## loose のリストを詰める
+
+- 項目の間と、1 つの項目の中のとなり合うブロックの間の空行（引用の中では `>` だけの行）を消す
+- 消す行は、Comrak の構文木で項目と子のブロックの位置から決める。子のブロックの中（コード・HTML・数式・入れ子のリスト）の行には触れない
+- 1 つの項目に段落が続けて 2 つあるもの・段落の後に字下げのコードがあるものは、先に見送る（つなぐと構造が変わる）
+- 当てた後の構文木が、対象のリストの tight のほかはノードごとに同じ（数・親子と兄弟のつながり・中身）ものだけを当てる。描画で変わるのは、項目の段落を包む `<p>` だけ
+- 詰めた文書を基準にするので、MD031（`list_items`）や MD032 が項目の中に空行を足す修正は、tight の並びの確かめで落ちる。空行が消えたり戻ったりを繰り返さない
+- Comrak は tight を `List` にだけ持つ（`Item` は常に false）
+
+## HTML のブロックの整形
+
+- 対象は Comrak の `HtmlBlock` のうち一般のタグで始まるもの（CommonMark の種類 6・7）だけ。`pre`・`script`・`style`・`textarea` で始まるもの、コメント、段落の中のインライン HTML は変えない
+- 整形器は js-beautify（lock で固定）。字下げ 2・折り返さない・空行を足さない・テンプレートの記法を解釈しない
+- Markdown をはさんだ断片（`<details>` と `</details>` の間に本文があるものなど）は、断片ごとに入れ物の字下げから整形する。1 行目を 4 つ以上字下げすると、空行の後ではコードブロックになるため
+- 当てた後に、Comrak の HTML の描画（`normalizedHtml` で描画に出ない空白を除いて比べる）・構文木の全体・GitLab の記法・front matter・2 回目で変わらないことを確かめる
+
+## 速さ
+
+- 同じ文字列の解析の結果と検査の値は、1 回の呼び出しの中で使い回す
+- コード・数式・HTML の中身や GitLab の記法を必ず変える修正は、全文を解析せずに拒む（`doomedProtectedGroups`）
+- 選ばれる修正が無く、説明リストの印も無い文書は、解析せずに返す。行頭にタグの無い文書は HTML の段で、空行の後にリストの印や字下げの無い文書は詰める段で、解析しない
+- `exhaustive: true`（試験用）で近道を切った結果と、近道ありの結果が同じことを `test/fast-paths.test.mjs` などが確かめる
+- Node が対応していれば（22.8 以上）、依存のコンパイルの結果を導入先の `.compile-cache` に残す
+
+## CLI の取り決め
+
+[cli.mjs](../../cli.mjs) が引数・読み書き・終了コードを扱う。`format.mjs` を直接起動したときだけ、`cli.mjs` を読み込む（`format.mjs` の実体のパスで起動を判定する。シンボリックリンクやジャンクションを通っても動く）。
+
+- 終了コードは 0（成功）・1（`--check` で整形の要るファイルがあった）・2（誤り）。markdownlint の JS の設定が `process.exitCode` を変えても、結果で上書きする
+- 誤りは標準エラーに 1 行（`mdfmt: [<ファイル>: ]…`）。誤りのときは、標準出力に文書を書かない
+- 標準入力は、今までの Neovim の整形と同じく、BOM を外して不正な UTF-8 を置き換える。ファイルは UTF-8 として厳しく解き、BOM を書き戻す
+- `--filename` を省くと `<cwd>/stdin.md`。相対パスは cwd から解く
+- `--runtime-dir` を省くと、`format.mjs` のフォルダの `node_modules` を使う（導入先）
+- markdownlint の設定の探し方: ファイルが今のフォルダの下にあれば、今のフォルダを markdownlint-cli2 の基準にする（以前の `markdownlint-cli2 --fix` と同じく、上の階層のプロジェクト設定も効く）。そうでなければ、ファイルのフォルダを基準にする
+
+## 予備のプロセスの取り決め
+
+Neovim の保存の待ち時間の大半は、node の起動（約 60 ms）と依存の読み込み（約 160 ms）なので、LazyVimStarter は依存を読み込んだ node（[spare.mjs](../../spare.mjs)）を先に起動しておく。
+
+- 起動: `node <導入先>/spare.mjs [--runtime-dir <フォルダ>]`。依存とコンパイルキャッシュを先に読み、標準入力を待つ
+- 依頼: JSON の 1 行 `{"script": "<format.mjs のパス>", "argv": [CLI の引数…], "cwd": "<絶対パス>"}` と改行の後に、文書のバイト列
+- `script` の実体は、`spare.mjs` の隣の `format.mjs` でなければならない。`cwd` に移ってから、`cli()` を同じ引数で走らせる。標準出力・標準エラー・終了コードは CLI とバイト単位で同じ
+- 引き受けない依頼（見出しの不正・別の `script`・無い `cwd`・ファイルやフォルダの引数・`--write`・`--check`・`--help`・`--version`）は、何も出さずに終了コード 86 で終わる。Lua は 86 のときだけ CLI でやり直す
+- 1 回使ったら終わる（JS の設定やカスタムルールの状態を、次の保存に持ち越さない）
+
+## 導入
+
+[scripts/setup.mjs](../../scripts/setup.mjs) は、mdtable の導入スクリプトと同じ形にした。
+
+- 依存はリポジトリの外に置く（clone の中に `node_modules` を作らない。同期の対象を汚さない）
+- 作業用フォルダで `npm ci --omit=dev --ignore-scripts` と自己確認をしてから、今の導入と入れ替える。npm の失敗や、途中で止まったときも、今の導入は壊れない
+- npm は `npm-cli.js` を探して node で動かす（Windows の `npm.cmd` や Scoop の shim をシェルで動かさない）
+- 起動役は、Linux と Git Bash が `exec node` の sh（`format.mjs` は実行の権限を持たないので、リンクにしない）、PowerShell と cmd が `mdfmt.cmd`。cmd は `.cmd` を OEM のコードページで読むので、ASCII でないパスは書かない
+- Neovim（LazyVimStarter）は PATH の `mdfmt` でなく、導入先の `format.mjs` と `spare.mjs` を node で直接動かす（Windows で cmd.exe を通さず、予備のプロセスの実体の確かめを保つため）
