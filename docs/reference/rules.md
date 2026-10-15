@@ -56,8 +56,9 @@ markdownlint の各ルールで Markdown をどう変えるかの一覧。loose 
 | [MD053](#md053-link-image-reference-definitions) link-image-reference-definitions | `unused_definitions` | 無効 | 使っていない参照定義の行を消す |
 | [MD060](#md060-table-column-style) table-column-style | `tables` | 有効 | 表の列の書き方を揃える |
 | [MD044](#md044-proper-names) proper-names | `proper_names` | 有効 | 固有名詞の大文字小文字を直す (名前を設定したときだけ) |
+| [MD013](#md013-line-length) line-length | `line_length` | 無効 | 長すぎる行を、既にある空白の位置で折る |
 
-自動修正の無いルール: MD001 MD003 MD013 MD024 MD025 MD028 MD033 MD035 MD036 MD040 MD041 MD042 MD043 MD045 MD046 MD048 MD052 MD055 MD056 MD059。
+自動修正の無いルール: MD001 MD003 MD024 MD025 MD028 MD033 MD035 MD036 MD040 MD041 MD042 MD043 MD045 MD046 MD048 MD052 MD055 MD056 MD059。
 診断だけで、整形では変えない。
 
 markdownlint を上げてルールが増えたときは、[format.mjs](../../format.mjs) の分類の表に足すまで、そのルールの修正は当てない。
@@ -862,6 +863,78 @@ GitLab のラベルの参照 (`~"javascript"`) の中は変えない (参照先�
 
 ```markdown 変わらない
 ラベル ~"javascript" の課題
+```
+
+## 行の長さ
+
+### MD013 line-length
+
+分類 `line_length`、既定で無効。有効にすると、markdownlint の MD013 が長すぎると報告した段落の行を、既にある空白の位置で折る。
+
+- 幅と対象は MD013 の設定（`line_length`（既定 80）・`strict`・`stern`・`headings` など）に従う。MD013 を無効にした設定では折らない
+- 折るのは段落の行だけ（リスト・引用・GLFM の説明・alerts の中の段落も）。見出し・表・コード・HTML のブロック・front matter と、
+  MD013 が報告しない行（リンクや脚注の定義など）は折らない
+- 既にある空白（半角の空白とタブ）の位置でだけ折り、折った所の空白は消す。続きの行の頭は、段落の中身の桁にそろえる（引用の `>` は保つ）
+- 次の所では折らない
+  - 空白の両側が全角の文字（日本語どうしなど）の所。Firefox などは全角の文字の間の改行を消すので、空白が見えなくなる。
+    空白の無い日本語の長い行は、折れる所が無いので残る
+  - コードスパン・インラインの数式・同じ行のインラインの HTML の間・リンクと画像の行き先と title・守る記法の中
+  - `\` の直後（折ると硬い改行になる）と、折った後の行の頭がブロックの記法（リストの印・`#`・`>`・区切り線・表・`<` など）になる所
+- 幅の中で最後の折れる所を選ぶ。幅の中に無ければ、幅を越えた最初の折れる所で折る。短い行はつながない。行末の硬い改行は保つ
+- 折った後の Markdown の構造と、Comrak の HTML の描画（空白の違いを除く）が変わらないものだけを当てる
+- GitHub の Issue・Pull Request の本文やコメントでは、段落の中の改行が強制改行として描かれる。それらに使う文書（`.github` のひな形など）では有効にしない
+
+markdownlint の設定:
+
+```json markdownlint
+{ "MD013": { "line_length": 40 } }
+```
+
+整形前:
+
+```markdown 整形前 fixes=line_length
+長い行は MD013 の line_length の幅に収まるように、既にある空白の位置で折る (whitespace only)。
+
+- リストの項目の long line も、中身の桁にそろえて折る (list item example)
+
+> 引用の中の long line も、引用の印を保って折る (block quote example)
+```
+
+整形後:
+
+```markdown 整形後
+長い行は MD013 の line_length
+の幅に収まるように、既にある空白の位置で折る (whitespace only)。
+
+- リストの項目の long line も、中身の桁にそろえて折る (list
+  item example)
+
+> 引用の中の long line も、引用の印を保って折る (block
+> quote example)
+```
+
+2 行目の残りは、MD013 と同じく最後の空白の後ろを数えずに測るので、幅を少し越えても短い切れ端を作らない。
+コードスパンの中では折らず、その前後の空白で折る。
+
+整形前:
+
+```markdown 整形前 fixes=line_length
+`a long code span that must stay on one line` は中で折らない
+```
+
+整形後:
+
+```markdown 整形後
+`a long code span that must stay on one line`
+は中で折らない
+```
+
+日本語どうしの間の空白では折らない。
+
+変わらない:
+
+```markdown 変わらない fixes=line_length
+日本語の 文の 途中の 空白では 折らない ので この 行は 長くても そのまま 残る ことが ある
 ```
 
 ## HTML のブロック
