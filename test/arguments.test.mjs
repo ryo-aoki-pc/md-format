@@ -72,7 +72,6 @@ test("CLI rejects unknown, repeated, or incomplete arguments without emitting bu
     [[...base, "--unknown", "value"], /引数/],
     [[...base, "--filename", options.filename], /複数回/],
     [[...base, "--config"], /引数/],
-    [["--filename", options.filename], /--runtime-dir/],
     [["--runtime-dir", runtimeDir], /絶対ファイル名/],
   ]) {
     const child = cli(options, args);
@@ -82,6 +81,14 @@ test("CLI rejects unknown, repeated, or incomplete arguments without emitting bu
     assert.equal(child.stderr.trimEnd().split("\n").length, 1);
   }
   assert.equal(await readFile(options.filename, "utf8"), diskContents);
+});
+
+test("CLI reads dependencies from its own folder when --runtime-dir is omitted", async (t) => {
+  const options = await project(t);
+  const child = cli(options, ["--filename", options.filename, "--enable-fixes", "heading_conversion"]);
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stderr, "");
+  assert.equal(child.stdout, input.replace("#Unsaved", "# Unsaved"));
 });
 
 test("CLI rejects invalid range endpoints and recovers on the next invocation", async (t) => {

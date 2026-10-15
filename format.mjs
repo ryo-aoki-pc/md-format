@@ -1354,19 +1354,22 @@ export async function formatMarkdown(source, options = {}) {
 }
 
 // 予備では依存だけを先に読み、設定・ルールの読み込みとエラーの表示は要求まで待つ。
-export function preload(runtimeDir) {
+// 依存の場所を省くと、このファイルのフォルダ (導入先) から読む。読めたかどうかを返す (失敗は投げない)。
+export function preload(runtimeDir = scriptDirectory) {
+  const directory = runtimeDir || scriptDirectory;
   try {
-    nodeModule.enableCompileCache?.(path.join(path.resolve(runtimeDir), ".compile-cache"));
+    nodeModule.enableCompileCache?.(path.join(path.resolve(directory), ".compile-cache"));
   } catch {
     // compile cache は速さのためだけのもの。
   }
-  return runtime(runtimeDir).then(() => {
+  return runtime(directory).then(() => {
     try {
-      htmlBeautifier(runtimeDir);
+      htmlBeautifier(directory);
     } catch {
       // HTML の整形器が無ければ、要求で HTML のブロックを整形するときに知らせる。
     }
-  }).catch(() => {});
+    return true;
+  }).catch(() => false);
 }
 
 export async function cli(argv = process.argv.slice(2), input = process.stdin) {
@@ -1384,7 +1387,8 @@ export async function cli(argv = process.argv.slice(2), input = process.stdin) {
     if (options[name] !== undefined) throw new Error("同じ引数を複数回指定できません。");
     options[name] = arguments_[++index];
   }
-  if (!options.runtimeDir) throw new Error("--runtime-dir を指定してください。");
+  // 依存の場所を省くと、このファイルのフォルダ (導入先) から読む。
+  options.runtimeDir ||= scriptDirectory;
   // 保存のたびの起動の大半は、依存 (markdownlint-cli2 とその依存) の読み込み。Node が対応していれば (22.8 以上)、
   // コンパイルの結果を依存の隣に残して次の起動で使う。ファイルの中身が変われば Node が作り直す。使えなくても整形は続ける。
   try {

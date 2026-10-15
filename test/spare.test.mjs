@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -119,7 +119,7 @@ test("基本の21通りで予備とCLIの結果が一致する", async (t) => {
     ["修正の分類", input, ["--disable-fixes", "heading_spacing,whitespace"], 0],
     ["未知の引数", input, ["--unknown", "value"], 1],
     ["引数の重複", input, ["--filename", options.filename], 1],
-    ["runtimeなし", input, [], 1, ["--filename", options.filename]],
+    ["runtimeなし", input, [], 0, ["--filename", options.filename]],
     ["相対のファイル名", input, [], 1, ["--runtime-dir", runtimeDir, "--filename", "relative.md"]],
     ["未知の分類", input, ["--enable-fixes", "unknown_category"], 1],
     ["有効と無効の衝突", input, ["--enable-fixes", "MD009", "--disable-fixes", "MD009"], 1],
@@ -288,18 +288,29 @@ test("起動引数のruntimeが無い・存在しない場合も要求時の結�
   const options = await project(t);
   const missingRuntime = path.join(options.cwd, "missing-runtime");
   for (const startupArgs of [[], ["--runtime-dir", missingRuntime]]) {
-    for (const argv of [options.argv, ["--filename", options.filename],
-      ["--runtime-dir", missingRuntime, "--filename", options.filename],
-      ["--runtime-dir", missingRuntime, "--filename", "relative.md"],
-      ["--runtime-dir", missingRuntime, "--unknown", "value"]]) {
+    // --runtime-dir を省いた要求は、format.mjs のフォルダの依存で整形する。
+    for (const [argv, code] of [[options.argv, 0], [["--filename", options.filename], 0],
+      [["--runtime-dir", missingRuntime, "--filename", options.filename], 1],
+      [["--runtime-dir", missingRuntime, "--filename", "relative.md"], 1],
+      [["--runtime-dir", missingRuntime, "--unknown", "value"], 1]]) {
       const running = await startSpare(t, { startupArgs, ready: true });
       const result = await compare(t, options, input, { running, argv });
-      assert.equal(result.code, argv === options.argv ? 0 : 1, result.stderr.toString());
+      assert.equal(result.code, code, result.stderr.toString());
     }
     const unused = await startSpare(t, { startupArgs, ready: true });
     unused.child.stdin.end();
     quiet(await unused.result, 0);
   }
+});
+
+test("起動引数のruntimeを省くと、format.mjsのフォルダの依存を先読みする", async () => {
+  // spare.mjs は --runtime-dir が無いと preload() を引数なしで呼ぶ。先読みが黙って失敗すると、予備の速さが失われる。
+  const child = spawnSync(process.execPath, ["--input-type=module", "--eval", `
+    const { preload } = await import(${JSON.stringify(pathToFileURL(formatterPath).href)});
+    process.stdout.write(String(await preload()) + "," + String(await preload(undefined)));
+  `], { cwd: packageDir, encoding: "utf8" });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, "true,true");
 });
 
 test("先読みで失敗したruntimeに依存が現れたら要求時に読み直す", async (t) => {
