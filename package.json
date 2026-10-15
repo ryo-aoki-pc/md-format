@@ -1,0 +1,13 @@
+{
+  "name": "lazyvim-glfm-format",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "dependencies": {
+    "comrak": "0.48.0-rc.0",
+    "js-beautify": "2.0.3",
+    "markdownlint-cli2": "0.23.3"
+  }
+}
