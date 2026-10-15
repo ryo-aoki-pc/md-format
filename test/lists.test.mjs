@@ -120,6 +120,14 @@ test("項目の中に空行を足す修正 (MD031・MD032) は、詰まったリ
   }
 });
 
+test("引用の中で、入れ子のリストの後の空行も消して詰める", async (t) => {
+  const options = await project(t);
+  // Comrak は、引用の中の入れ子のリストの終わりを、後ろの > だけの行まで含める。
+  await assertFormats(options, "> - a\n>\n>   - note\n>\n> - b\n", "> - a\n>   - note\n> - b\n", "項目の間");
+  await assertFormats(options, "> - a\n>\n>   - note\n>\n>   ```\n>   x\n>   ```\n",
+    "> - a\n>   - note\n>   ```\n>   x\n>   ```\n", "項目の中のブロックの間");
+});
+
 test("詰まったリストに空行を足す修正が多くても、修正ごとに文書を解析し直さない", async (t) => {
   const options = await project(t);
   // 詰めたリストの各項目に、MD031 と MD032 が空行を求める (フェンスの前後、入れ子のリストの前後)。

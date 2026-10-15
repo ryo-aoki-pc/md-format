@@ -1183,6 +1183,13 @@ function listTighteningEdits(lines, nodes, selection) {
         lines[end.line - 1].start + lines[end.line - 1].content.length > selection.end)) continue;
     const rows = [];
     let mergeable = true;
+    // 子のブロックの終わりの行。引用の中では、Comrak は入れ子のリストの終わりを、後ろの空行 (> だけの行) まで含めるので、
+    // その空行は除く (除いた空行も、ブロックの間の空行として消す)。
+    const lastRow = (node) => {
+      let row = node.data.sourcepos.end.line;
+      while (row > node.data.sourcepos.start.line && blank(row)) row--;
+      return row;
+    };
     const items = childIndices(nodes, index);
     items.forEach((item, position) => {
       const children = childIndices(nodes, item);
@@ -1190,10 +1197,10 @@ function listTighteningEdits(lines, nodes, selection) {
         const [previous, next] = [nodes[children[child - 1]], nodes[children[child]]];
         if (nodeType(previous) === "Paragraph" && (nodeType(next) === "Paragraph" ||
             (nodeType(next) === "CodeBlock" && !next.data.value.CodeBlock.fenced))) mergeable = false;
-        for (let row = previous.data.sourcepos.end.line + 1; row < next.data.sourcepos.start.line; row++) rows.push(row);
+        for (let row = lastRow(previous) + 1; row < next.data.sourcepos.start.line; row++) rows.push(row);
       }
       if (position + 1 < items.length) {
-        const last = children.length ? nodes[children.at(-1)].data.sourcepos.end.line : nodes[item].data.sourcepos.start.line;
+        const last = children.length ? lastRow(nodes[children.at(-1)]) : nodes[item].data.sourcepos.start.line;
         for (let row = last + 1; row < nodes[items[position + 1]].data.sourcepos.start.line; row++) rows.push(row);
       }
     });
