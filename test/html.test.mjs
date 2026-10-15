@@ -199,8 +199,8 @@ test("HTML の整形器が無い runtime では、HTML のブロックのある�
   const settings = { ...options, runtimeDir: partial };
   assert.equal(await formatMarkdown("#  見出し\n\n本文 <b>強調</b>\n", settings), "# 見出し\n\n本文 <b>強調</b>\n",
     "インライン HTML だけの文書は js-beautify を読まない");
-  await assert.rejects(formatMarkdown(tables[0][1], settings), /js-beautify.*:GlfmFormatInstall/u);
-  await assert.rejects(formatMarkdown(tables[0][2], settings), /js-beautify.*:GlfmFormatInstall/u, "整形済みでも、確かめるには読む");
+  await assert.rejects(formatMarkdown(tables[0][1], settings), /js-beautify.*導入スクリプト/u);
+  await assert.rejects(formatMarkdown(tables[0][2], settings), /js-beautify.*導入スクリプト/u, "整形済みでも、確かめるには読む");
   assert.equal(await formatMarkdown(tables[0][1], { ...settings, fixes: { html: false } }), tables[0][1]);
 });
 

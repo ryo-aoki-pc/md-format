@@ -117,18 +117,18 @@ test("基本の21通りで予備とCLIの結果が一致する", async (t) => {
     ["末尾の改行なし", "本文", [], 0],
     ["範囲", input, ["--range-start", "3", "--range-end", "3", "--range-end-column", "5"], 0],
     ["修正の分類", input, ["--disable-fixes", "heading_spacing,whitespace"], 0],
-    ["未知の引数", input, ["--unknown", "value"], 1],
-    ["引数の重複", input, ["--filename", options.filename], 1],
+    ["未知の引数", input, ["--unknown", "value"], 2],
+    ["引数の重複", input, ["--filename", options.filename], 2],
     ["runtimeなし", input, [], 0, ["--filename", options.filename]],
-    ["相対のファイル名", input, [], 1, ["--runtime-dir", runtimeDir, "--filename", "relative.md"]],
-    ["未知の分類", input, ["--enable-fixes", "unknown_category"], 1],
-    ["有効と無効の衝突", input, ["--enable-fixes", "MD009", "--disable-fixes", "MD009"], 1],
-    ["空の分類", input, ["--enable-fixes", "whitespace,"], 1],
-    ["範囲の不正", input, ["--range-start", "one", "--range-end", "2"], 1],
-    ["範囲の不足", input, ["--range-start", "1"], 1],
-    ["設定ファイルが無い", input, ["--config", path.join(options.cwd, "missing.json")], 1],
-    ["不正なJSONの設定", input, ["--config", badConfig], 1],
-    ["ルールの例外", input, ["--config", throwingConfig], 1],
+    ["相対のファイル名", input, [], 0, ["--runtime-dir", runtimeDir, "--filename", "relative.md"]],
+    ["未知の分類", input, ["--enable-fixes", "unknown_category"], 2],
+    ["有効と無効の衝突", input, ["--enable-fixes", "MD009", "--disable-fixes", "MD009"], 2],
+    ["空の分類", input, ["--enable-fixes", "whitespace,"], 2],
+    ["範囲の不正", input, ["--range-start", "one", "--range-end", "2"], 2],
+    ["範囲の不足", input, ["--range-start", "1"], 2],
+    ["設定ファイルが無い", input, ["--config", path.join(options.cwd, "missing.json")], 2],
+    ["不正なJSONの設定", input, ["--config", badConfig], 2],
+    ["ルールの例外", input, ["--config", throwingConfig], 2],
   ];
   for (const [name, body, extra, code, base = options.argv] of cases) {
     await t.test(name, async (t) => {
@@ -157,7 +157,8 @@ test("BOMと不正なUTF-8をバイト列のまま渡す", async (t) => {
 test("JSの設定から見える引数・終了コード・console出力がCLIと一致する", async (t) => {
   for (const [name, source, code] of [
     ["process.argvを読む", 'console.log(JSON.stringify(process.argv));', 0],
-    ["終了コードを7にする", 'process.exitCode = 7;', 7],
+    // 終了コードは 0・1・2 に決める。設定が process.exitCode を変えても、整形の結果で上書きする。
+    ["終了コードを7にする", 'process.exitCode = 7;', 0],
     ["consoleに書く", 'console.log("設定の標準出力"); console.error("設定の標準エラー");', 0],
   ]) {
     await t.test(name, async (t) => {
@@ -267,6 +268,17 @@ test("見出しの不正・別のscript・存在しないcwdは何も出さず�
   }
 });
 
+test("ファイル・フォルダ・--write・--check・--help・--versionの依頼は引き受けずに86で終わる", async (t) => {
+  const options = await project(t);
+  for (const extra of [[options.filename], [options.cwd], ["--write", options.filename], ["--check", options.filename],
+    ["--write"], ["--check"], ["--help"], ["--version"]]) {
+    const argv = extra.some((argument) => !argument.startsWith("-")) ? ["--runtime-dir", runtimeDir, ...extra] : [...options.argv, ...extra];
+    const running = await startSpare(t);
+    quiet(await send(running, { script: formatterPath, argv, cwd: options.cwd }, input), 86);
+  }
+  assert.equal(await readFile(options.filename, "utf8"), "保存済みの本文\n");
+});
+
 test("JSONのスラッシュのエスケープと見出し・本文の分割送信を扱う", async (t) => {
   const options = await project(t);
   const running = await startSpare(t);
@@ -290,9 +302,9 @@ test("起動引数のruntimeが無い・存在しない場合も要求時の結�
   for (const startupArgs of [[], ["--runtime-dir", missingRuntime]]) {
     // --runtime-dir を省いた要求は、format.mjs のフォルダの依存で整形する。
     for (const [argv, code] of [[options.argv, 0], [["--filename", options.filename], 0],
-      [["--runtime-dir", missingRuntime, "--filename", options.filename], 1],
-      [["--runtime-dir", missingRuntime, "--filename", "relative.md"], 1],
-      [["--runtime-dir", missingRuntime, "--unknown", "value"], 1]]) {
+      [["--runtime-dir", missingRuntime, "--filename", options.filename], 2],
+      [["--runtime-dir", missingRuntime, "--filename", "relative.md"], 2],
+      [["--runtime-dir", missingRuntime, "--unknown", "value"], 2]]) {
       const running = await startSpare(t, { startupArgs, ready: true });
       const result = await compare(t, options, input, { running, argv });
       assert.equal(result.code, code, result.stderr.toString());

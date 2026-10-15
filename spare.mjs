@@ -5,7 +5,8 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { buffer as readBuffer } from "node:stream/consumers";
 import { fileURLToPath } from "node:url";
-import { cli, cliFailure, preload } from "./format.mjs";
+import { cli, cliFailure, parseArguments } from "./cli.mjs";
+import { preload } from "./format.mjs";
 
 const formatterPath = fileURLToPath(new URL("./format.mjs", import.meta.url));
 const runtimeIndex = process.argv.indexOf("--runtime-dir", 2);
@@ -24,6 +25,19 @@ async function spare() {
         !header.argv.every((argument) => typeof argument === "string") ||
         typeof header.cwd !== "string" || !path.isAbsolute(header.cwd) ||
         fs.realpathSync(path.resolve(header.cwd, header.script)) !== fs.realpathSync(formatterPath)) {
+      process.exitCode = 86;
+      return;
+    }
+    // 予備は標準入力の整形だけを引き受ける。ファイル・フォルダ・--write・--check・--help・--version は CLI に戻す。
+    // 引数の誤りは CLI と同じく cli() に知らせさせる。
+    let parsed;
+    try {
+      parsed = parseArguments(header.argv);
+    } catch {
+      parsed = undefined;
+    }
+    const { options = {}, inputs = [] } = parsed ?? {};
+    if (inputs.length || options.write || options.check || options.help || options.version) {
       process.exitCode = 86;
       return;
     }

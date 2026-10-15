@@ -72,10 +72,9 @@ test("CLI rejects unknown, repeated, or incomplete arguments without emitting bu
     [[...base, "--unknown", "value"], /引数/],
     [[...base, "--filename", options.filename], /複数回/],
     [[...base, "--config"], /引数/],
-    [["--runtime-dir", runtimeDir], /絶対ファイル名/],
   ]) {
     const child = cli(options, args);
-    assert.equal(child.status, 1);
+    assert.equal(child.status, 2);
     assert.equal(child.stdout, "");
     assert.match(child.stderr, message);
     assert.equal(child.stderr.trimEnd().split("\n").length, 1);
@@ -104,7 +103,7 @@ test("CLI rejects invalid range endpoints and recovers on the next invocation", 
     ["--range-start", "1", "--range-end", "1", "--range-start-column", "5", "--range-end-column", "2"],
   ]) {
     const child = cli(options, [...base, ...args]);
-    assert.equal(child.status, 1);
+    assert.equal(child.status, 2);
     assert.equal(child.stdout, "");
     assert.match(child.stderr, /範囲/);
   }
@@ -138,7 +137,7 @@ test("CLI selects fixes by category and rule name and rejects invalid selections
     [["--disable-fixes"], /引数/],
   ]) {
     const child = cli(options, [...base, ...args]);
-    assert.equal(child.status, 1, args.join(" "));
+    assert.equal(child.status, 2, args.join(" "));
     assert.equal(child.stdout, "");
     assert.match(child.stderr, message);
   }

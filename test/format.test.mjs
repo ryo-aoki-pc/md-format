@@ -691,6 +691,7 @@ test("CLI formats when its path goes through a symbolic link or junction", async
     const link = path.join(options.cwd, "link");
     await mkdir(real);
     await copyFile(formatterPath, path.join(real, "format.mjs"));
+    await copyFile(path.join(path.dirname(formatterPath), "cli.mjs"), path.join(real, "cli.mjs"));
     await symlink(real, link, "junction");
     const child = spawnSync(process.execPath, [path.join(link, "format.mjs"), "--runtime-dir", runtimeDir, "--filename", options.filename,
       "--enable-fixes", "heading_conversion"], {

@@ -5,7 +5,6 @@ import path from "node:path";
 import * as nodeModule from "node:module";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { text as readText } from "node:stream/consumers";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const runtimes = new Map();
@@ -40,8 +39,8 @@ const literalNodes = new Set([
 const literalSpanTypes = new Set(["Code", "CodeBlock", "Math", "HtmlBlock", "HtmlInline"]);
 const indentRules = new Set(["MD005", "MD007"]);
 
-// 整形で直す修正の分類。名前は lang-markdown.lua の format_fixes と、CLI の --enable-fixes / --disable-fixes で使う。
-// ルールごとの例は docs/reference/glfm-format.md にある。
+// 整形で直す修正の分類。名前は CLI の --enable-fixes / --disable-fixes (Neovim では LazyVimStarter の format_fixes) で使う。
+// ルールごとの例は docs/reference/rules.md にある。
 export const fixCategories = Object.freeze({
   heading_spacing: ["MD019", "MD021", "MD023"],
   heading_conversion: ["MD018", "MD020"],
@@ -174,7 +173,7 @@ async function runtime(directory) {
 }
 
 // HTML のブロックの整形器 (js-beautify)。整形するブロックがあるときだけ読む (HTML の無い文書は、依存を入れ直す前でも整形できる)。
-// 読めなかったことは覚えない (後から :GlfmFormatInstall で入れたら、次の要求で読む)。
+// 読めなかったことは覚えない (後から導入し直したら、次の要求で読む)。
 const beautifiers = new Map();
 
 function htmlBeautifier(directory) {
@@ -184,10 +183,10 @@ function htmlBeautifier(directory) {
     try {
       ({ html } = createRequire(path.join(resolved, "package.json"))("js-beautify"));
     } catch (error) {
-      throw new Error("HTML の整形器 (js-beautify) を読み込めません。:GlfmFormatInstall を実行してください。", { cause: error });
+      throw new Error("HTML の整形器 (js-beautify) を読み込めません。md-format の導入スクリプト (scripts/setup.mjs) を実行し直してください。", { cause: error });
     }
     if (typeof html !== "function") {
-      throw new Error("HTML の整形器 (js-beautify) を読み込めません。:GlfmFormatInstall を実行してください。");
+      throw new Error("HTML の整形器 (js-beautify) を読み込めません。md-format の導入スクリプト (scripts/setup.mjs) を実行し直してください。");
     }
     beautifiers.set(resolved, html);
   }
@@ -1372,59 +1371,8 @@ export function preload(runtimeDir = scriptDirectory) {
   }).catch(() => false);
 }
 
-export async function cli(argv = process.argv.slice(2), input = process.stdin) {
-  const options = {};
-  const names = new Map([["--runtime-dir", "runtimeDir"], ["--filename", "filename"], ["--config", "config"],
-    ["--range-start", "rangeStart"], ["--range-end", "rangeEnd"],
-    ["--range-start-column", "rangeStartColumn"], ["--range-end-column", "rangeEndColumn"],
-    ["--enable-fixes", "enableFixes"], ["--disable-fixes", "disableFixes"]]);
-  const arguments_ = argv;
-  for (let index = 0; index < arguments_.length; index++) {
-    const name = names.get(arguments_[index]);
-    if (!name || !arguments_[index + 1] || arguments_[index + 1].startsWith("--")) {
-      throw new Error("引数は --runtime-dir、--filename、--config、--range-*、--enable-fixes、--disable-fixes を指定してください。");
-    }
-    if (options[name] !== undefined) throw new Error("同じ引数を複数回指定できません。");
-    options[name] = arguments_[++index];
-  }
-  // 依存の場所を省くと、このファイルのフォルダ (導入先) から読む。
-  options.runtimeDir ||= scriptDirectory;
-  // 保存のたびの起動の大半は、依存 (markdownlint-cli2 とその依存) の読み込み。Node が対応していれば (22.8 以上)、
-  // コンパイルの結果を依存の隣に残して次の起動で使う。ファイルの中身が変われば Node が作り直す。使えなくても整形は続ける。
-  try {
-    nodeModule.enableCompileCache?.(path.join(path.resolve(options.runtimeDir), ".compile-cache"));
-  } catch {
-    // compile cache は速さのためだけのもの。
-  }
-  // --enable-fixes と --disable-fixes は、カンマ区切りの分類名かルール名。同じ名前を両方に書くと、整形の API が拒む。
-  for (const [name, enabled] of [["enableFixes", true], ["disableFixes", false]]) {
-    if (options[name] === undefined) continue;
-    options.fixes ||= {};
-    for (const fix of options[name].split(",").map((value) => value.trim())) {
-      if (!fix) throw new Error("整形する対象の名前が空です。");
-      if (Object.hasOwn(options.fixes, fix) && options.fixes[fix] !== enabled) {
-        throw new Error(`整形する対象 ${fix} を、有効と無効の両方に指定しています。`);
-      }
-      options.fixes[fix] = enabled;
-    }
-  }
-  // conform は Neovim の作業ディレクトリでこのスクリプトを起動する。以前の markdownlint-cli2 --fix と
-  // 同じく、ファイルがその下にあればそこを CLI2 の基準にし、上の階層のプロジェクト設定も読ませる。
-  if (options.filename && path.isAbsolute(options.filename) && isInside(process.cwd(), options.filename)) {
-    options.cwd = process.cwd();
-  }
-  if (options.rangeStart !== undefined || options.rangeEnd !== undefined ||
-      options.rangeStartColumn !== undefined || options.rangeEndColumn !== undefined) {
-    if (!options.rangeStart || !options.rangeEnd) throw new Error("範囲の開始行と終了行を指定してください。");
-    options.range = {
-      start: [Number(options.rangeStart), options.rangeStartColumn === undefined ? 0 : Number(options.rangeStartColumn)],
-      end: [Number(options.rangeEnd), options.rangeEndColumn === undefined ? Infinity : Number(options.rangeEndColumn)],
-    };
-  }
-  const output = await formatMarkdown(await readText(input), options);
-  process.stdout.write(output);
-}
-
+// mdfmt の入口。CLI の本体は cli.mjs にあり、ここから読み込む (cli.mjs も formatMarkdown を読むので、
+// 読み込みを待たずに進め、このファイルの評価を先に終える)。
 // Node は実体のパスで読み込むので、シンボリックリンクやジャンクションを通った起動も実体で比べる。
 // 一致しないと何も出力せずに終わり、conform は空の出力として黙って整形をやめる。
 function isMainScript() {
@@ -1436,12 +1384,9 @@ function isMainScript() {
   }
 }
 
-export function cliFailure(error) {
-  const detail = error?.message?.split(/[\r\n]/u)[0] || "不明なエラー";
-  process.stderr.write(`GitLab Markdown の整形に失敗しました: ${detail}\n`);
-  process.exitCode = 1;
-}
-
 if (isMainScript()) {
-  cli().catch(cliFailure);
+  import("./cli.mjs").then(({ main }) => main(), (error) => {
+    process.stderr.write(`mdfmt: ${error?.message?.split(/[\r\n]/u)[0] || "不明なエラー"}\n`);
+    process.exitCode = 2;
+  });
 }
