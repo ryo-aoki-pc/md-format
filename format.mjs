@@ -380,11 +380,21 @@ function projection(source, parse) {
   // コードや数式などの中身と GitLab の記法の範囲。ここに掛かる修正は 1 つずつ確かめる。
   const protectedSpans = [...source.matchAll(gitlabAtoms)].map((match) => [match.index, match.index + match[0].length]);
   const headingRows = new Set();
+  // 詰まった (tight) リストの、となり合う項目の間と、1 つの項目の中のとなり合うブロックの間の、下の側の行。
+  // この行の前に空行を足すと、リストが loose になる。
+  const tightBoundaryRows = new Set();
   for (let index = 0; index < nodes.length; index++) {
     const node = nodes[index];
     const type = nodeType(node);
     const position = node.data.sourcepos?.start;
     if (!position || !lines[position.line - 1]) continue;
+    if (type === "List" && node.data.value.List.tight) {
+      const items = childIndices(nodes, index);
+      items.forEach((item, at) => {
+        for (const child of childIndices(nodes, item).slice(1)) tightBoundaryRows.add(nodes[child].data.sourcepos.start.line);
+        if (at > 0) tightBoundaryRows.add(nodes[item].data.sourcepos.start.line);
+      });
+    }
     const line = lines[position.line - 1];
     // 列 (UTF-16) を使うのは説明とリストの項目だけ。ほかのノードで行を UTF-8 に変換しない。
     const column = type === "DescriptionDetails" || type === "Item" || type === "TaskItem"
@@ -446,8 +456,16 @@ function projection(source, parse) {
   }
   return {
     source: projected, lines, itemLists, projectedRows, realPrefixes, protectedSpans: sortedSpans(protectedSpans), headingRows,
+    tightBoundaryRows,
     syntheticBlankRows: new Set(blankPrefixes.keys()),
   };
+}
+
+// 修正が、ある行の前に空行 (入れ物の > と空白だけの行) を 1 つ足すもの (MD022・MD031・MD032・MD058 の形) なら、その行。
+function insertedBlankRow(fix) {
+  const [row, column] = fixPosition(fix);
+  const { deleteCount, insertText } = fix.fixInfo;
+  return column === 1 && !deleteCount && /^[ \t>]*\n$/u.test(insertText || "") ? row : undefined;
 }
 
 // 引用に見立てた行では、markdownlint が空行を足すときに見立ての > まで写す。そのまま元の文書に
@@ -1262,8 +1280,8 @@ export async function formatMarkdown(source, options = {}) {
   if (selection && selection.end < selection.start) throw new Error("整形範囲の開始と終了が逆です。");
   const selected = fixSelector(options.fixes);
   const dependencies = await runtime(options.runtimeDir || scriptDirectory);
-  // 試験用: exhaustive は近道 (修正候補が無いときの早い終わりと、保護範囲の修正を解析せずに拒むこと、HTML のブロックの
-  // 無い文書を解析せずに見分けること) を使わない。stats には、文書全体の Comrak の解析 (parses)・コードブロックの行だけの
+  // 試験用: exhaustive は近道 (修正候補が無いときの早い終わりと、保護範囲の修正と、詰まったリストに空行を足す修正を
+  // 解析せずに拒むこと、HTML のブロックの無い文書を解析せずに見分けること) を使わない。stats には、文書全体の Comrak の解析 (parses)・コードブロックの行だけの
   // 解析 (blockParses)・lint (lints)・HTML の描画 (renders) を実際に呼んだ回数を足す。
   // beautifyHtml は、HTML のブロックの整形器 (js-beautify の html と同じ引数) を差し替える。
   const { exhaustive, stats } = options;
@@ -1349,6 +1367,10 @@ export async function formatMarkdown(source, options = {}) {
     }
     // 選ばれていない修正と、見出しにしてはいけない行の修正は、まとめを作る前に外す。
     fixes = fixes.filter((fix) => selected(fix) && convertibleHeading(fix, projected, selection));
+    // 詰まったリストの項目の間や項目の中のブロックの間に空行を足す修正 (MD031・MD032 など) は、リストを loose にするので
+    // 必ず落ちる。全文を解析して確かめずに外す (近道 L)。tight_lists で詰めたリストには、markdownlint が空行を求める所が多く、
+    // 確かめると半分に分ける解析が修正の数だけ増える。
+    if (!exhaustive) fixes = fixes.filter((fix) => !projected.tightBoundaryRows.has(insertedBlankRow(fix)));
     // 範囲で先に絞ると、通常のリストでも一部のマーカーだけが変わって分裂する。
     const groups = fixGroups(fixes, projected.itemLists)
       .filter((group) => group.every((fix) => inRange(projected.lines, fix, selection)));

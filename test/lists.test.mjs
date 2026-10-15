@@ -120,6 +120,24 @@ test("項目の中に空行を足す修正 (MD031・MD032) は、詰まったリ
   }
 });
 
+test("詰まったリストに空行を足す修正が多くても、修正ごとに文書を解析し直さない", async (t) => {
+  const options = await project(t);
+  // 詰めたリストの各項目に、MD031 と MD032 が空行を求める (フェンスの前後、入れ子のリストの前後)。
+  const step = (index, note) => `- step\n\n  \`\`\`bash\n  echo ${index}\n  \`\`\`\n${note ? "\n  - note\n" : ""}`;
+  const tight = (index, note) => `- step\n  \`\`\`bash\n  echo ${index}\n  \`\`\`\n${note ? "  - note\n" : ""}`;
+  const list = (item, note, separator) => Array.from({ length: 40 }, (_, index) => item(index + 1, note)).join(separator);
+  const quote = (text) => text.replace(/\n$/u, "").split("\n").map((line) => (line ? `> ${line}` : ">")).join("\n") + "\n";
+  for (const [name, source, result] of [
+    ["文書の直下", list(step, true, "\n"), list(tight, true, "")],
+    ["引用の中", quote(list(step, false, "\n")), quote(list(tight, false, ""))],
+  ]) {
+    await assertFormats(options, source, result, name);
+    const stats = {};
+    await formatMarkdown(source, { ...options, stats });
+    assert.ok(stats.parses < 10, `${name}: 解析は ${stats.parses} 回`);
+  }
+});
+
 test("項目の中の HTML のブロックを整形しても、リストを loose にしない", async (t) => {
   const options = await project(t);
   const input = "- 項目\n  <table><tr><td>a</td></tr></table>\n- 次\n";
