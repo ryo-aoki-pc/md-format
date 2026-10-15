@@ -170,10 +170,80 @@ function remove(directory) {
   fs.rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
 }
 
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+// 途中で止まった導入の後片づけ。導入先が無く、退避した前の導入 (<導入先>.old-<番号>) があれば、いちばん新しいものを戻す。
+// 残った作業用フォルダ (.new-*) と退避 (.old-*) は消す。
+function recover(installDir) {
+  const parent = path.dirname(installDir);
+  const base = path.basename(installDir);
+  const leftovers = fs.readdirSync(parent).filter((name) => name.startsWith(`${base}.old-`) || name.startsWith(`${base}.new-`))
+    .map((name) => path.join(parent, name));
+  const previous = leftovers.filter((full) => path.basename(full).startsWith(`${base}.old-`))
+    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  if (!fs.existsSync(installDir) && previous.length) {
+    fs.renameSync(previous[0], installDir);
+    console.log(`途中で止まった導入から、前の導入を戻しました: ${installDir}`);
+  }
+  for (const full of leftovers) remove(full);
+}
+
+// 同時に 2 つの導入を動かさないための鍵 (<導入先>.lock)。中に導入しているプロセスの番号を書く。そのプロセスがもう無い
+// (途中で止まった導入の) 鍵は、後片づけをしてから取り直す。番号を書く前に止まった鍵は、10 分たてば止まったものとみなす。
+function acquireLock(installDir) {
+  const lock = `${installDir}.lock`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.mkdirSync(lock);
+      fs.writeFileSync(path.join(lock, "pid"), String(process.pid));
+      return lock;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+    let owner = 0;
+    try {
+      owner = Number(fs.readFileSync(path.join(lock, "pid"), "utf8"));
+    } catch {
+      // 番号を書く前の鍵。
+    }
+    const stale = owner ? !processAlive(owner) : Date.now() - fs.statSync(lock).mtimeMs > 10 * 60 * 1000;
+    if (!stale) {
+      throw new Error(`ほかの導入が動いています${owner ? `（プロセス ${owner}）` : ""}。終わるのを待ってからやり直してください: ${lock}`);
+    }
+    console.log(`途中で止まった導入の鍵を片づけます: ${lock}`);
+    recover(installDir);
+    remove(lock);
+  }
+  throw new Error(`導入の鍵を取れません: ${lock}`);
+}
+
+// 起動役は隣の一時ファイルに書いてから置き換える (今の起動役がリンクでも、リンクの先を書き換えない。途中で止まっても、
+// 起動役が欠けない)。
+function writeLauncher({ file, text, mode }) {
+  const temporary = `${file}.tmp-${process.pid}`;
+  try {
+    fs.writeFileSync(temporary, text, { flag: "w" });
+    if (mode) fs.chmodSync(temporary, mode);
+    fs.renameSync(temporary, file);
+  } catch (error) {
+    fs.rmSync(temporary, { force: true });
+    throw error;
+  }
+}
+
 function install({ installDir, binDir }) {
   if (inside(installDir, repository) || inside(binDir, repository)) {
     throw new Error("--install-dir と --bin-dir はリポジトリの外を指定してください（clone の中に依存を置かない）");
   }
+  // 導入先は入れ替えるので、clone を中に含むフォルダは使えない (clone ごと退避して消してしまう)。
+  if (inside(repository, installDir)) throw new Error("--install-dir に、clone を含むフォルダは指定できません");
   if (nodeMajor() < minimumNode) throw new Error(`Node.js ${minimumNode} 以上が必要です（今は ${process.version}）`);
   const version = repositoryVersion();
   if (!version) throw new Error(`package.json を読めません: ${repository}`);
@@ -181,13 +251,7 @@ function install({ installDir, binDir }) {
   const planned = launchers(installDir, binDir);
   fs.mkdirSync(path.dirname(installDir), { recursive: true });
   // 同時に 2 つの導入を動かさない (作業用フォルダと入れ替えがぶつかる)。
-  const lock = `${installDir}.lock`;
-  try {
-    fs.mkdirSync(lock);
-  } catch (error) {
-    if (error.code === "EEXIST") throw new Error(`ほかの導入が動いています。終わっていなければ ${lock} を消してからやり直してください`);
-    throw error;
-  }
+  const lock = acquireLock(installDir);
   const staging = `${installDir}.new-${process.pid}`;
   const previous = `${installDir}.old-${process.pid}`;
   try {
@@ -229,10 +293,9 @@ function install({ installDir, binDir }) {
     fs.rmSync(lock, { recursive: true, force: true });
   }
   fs.mkdirSync(binDir, { recursive: true });
-  for (const { file, text, mode } of planned) {
-    fs.writeFileSync(file, text);
-    if (mode) fs.chmodSync(file, mode);
-    console.log(`起動役を置きました: ${file}`);
+  for (const launcher of planned) {
+    writeLauncher(launcher);
+    console.log(`起動役を置きました: ${launcher.file}`);
   }
 }
 

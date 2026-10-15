@@ -120,14 +120,22 @@ function documentOptions(base, filename) {
 }
 
 // フォルダの下の *.md を名前順に集める。. で始まるフォルダ・node_modules と、シンボリックリンクはたどらない。
-async function markdownFiles(directory) {
-  const entries = await readdir(directory, { withFileTypes: true });
+// 読めない子フォルダは problems に足して、残りを集め続ける (渡したフォルダそのものが読めなければ投げる)。
+async function markdownFiles(directory, problems, root = true) {
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (root) throw error;
+    problems.push({ path: directory, error });
+    return [];
+  }
   entries.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
   const files = [];
   for (const entry of entries) {
     const full = path.join(directory, entry.name);
     if (entry.isDirectory()) {
-      if (!entry.name.startsWith(".") && entry.name !== "node_modules") files.push(...await markdownFiles(full));
+      if (!entry.name.startsWith(".") && entry.name !== "node_modules") files.push(...await markdownFiles(full, problems, false));
     } else if (entry.isFile() && /\.md$/iu.test(entry.name)) {
       files.push(full);
     }
@@ -215,13 +223,18 @@ async function formatFiles(base, inputs, mode) {
   const seen = new Set();
   for (const input of inputs) {
     const resolved = path.resolve(input);
+    const problems = [];
     let found;
     try {
-      found = (await stat(resolved)).isDirectory() ? await markdownFiles(resolved) : [resolved];
+      found = (await stat(resolved)).isDirectory() ? await markdownFiles(resolved, problems) : [resolved];
     } catch (error) {
       process.stderr.write(`mdfmt: ${input}: 開けません: ${firstLine(error)}\n`);
       failed = true;
       continue;
+    }
+    for (const problem of problems) {
+      process.stderr.write(`mdfmt: ${displayPath(problem.path)}: 開けません: ${firstLine(problem.error)}\n`);
+      failed = true;
     }
     for (const file of found) {
       if (seen.has(file)) continue;
@@ -268,7 +281,9 @@ async function run(argv, input) {
   } catch {
     // compile cache は速さのためだけのもの。
   }
-  const base = { runtimeDir, config: options.config, fixes: fixesOf(options), range: rangeOf(options) };
+  // --config の相対パスは、起動したフォルダから解く (ファイルごとの基準のフォルダで変わらないように)。
+  const config = options.config === undefined ? undefined : path.resolve(options.config);
+  const base = { runtimeDir, config, fixes: fixesOf(options), range: rangeOf(options) };
   if (!inputs.length) {
     if (input === process.stdin && process.stdin.isTTY) {
       process.stderr.write(usage);

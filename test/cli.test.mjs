@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -145,6 +145,36 @@ test("標準入力では --write と --check を使えない", async (t) => {
     assert.equal(child.stdout, "", flag);
     assert.match(child.stderr, /ファイルかフォルダと一緒に/u, flag);
   }
+});
+
+test("相対の --config は、起動したフォルダから解く (今のフォルダの外のファイルでも同じ設定)", async (t) => {
+  const root = await project(t);
+  const cwd = path.join(root, "here");
+  const other = path.join(root, "other");
+  await mkdir(cwd);
+  await mkdir(other);
+  // 今のフォルダの設定は MD009 (行末の空白) だけ。ほかのフォルダに同じ名前の別の設定を置く。
+  await writeFile(path.join(cwd, "settings.json"), JSON.stringify({ default: false, MD009: true }));
+  await writeFile(path.join(other, "settings.json"), JSON.stringify({ default: false, MD019: true }));
+  await writeFile(path.join(cwd, "a.md"), "#  見出し \n");
+  await writeFile(path.join(other, "b.md"), "#  見出し \n");
+  const child = mdfmt(cwd, ["--write", "--config", "settings.json", "a.md", path.join("..", "other", "b.md")]);
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(await readFile(path.join(cwd, "a.md"), "utf8"), "#  見出し\n");
+  assert.equal(await readFile(path.join(other, "b.md"), "utf8"), "#  見出し\n");
+});
+
+test("読めない子フォルダがあっても、ほかのファイルを扱ってから 2 で終わる", { skip: process.platform === "win32" }, async (t) => {
+  const cwd = await project(t);
+  await mkdir(path.join(cwd, "docs", "private"), { recursive: true });
+  await writeFile(path.join(cwd, "docs", "a.md"), messy);
+  await writeFile(path.join(cwd, "docs", "z.md"), messy);
+  await chmod(path.join(cwd, "docs", "private"), 0o000);
+  t.after(() => chmod(path.join(cwd, "docs", "private"), 0o755));
+  const child = mdfmt(cwd, ["--write", "docs"]);
+  assert.equal(child.status, 2);
+  assert.deepEqual(lines(child.stdout), [path.join("docs", "a.md"), path.join("docs", "z.md")]);
+  assert.match(child.stderr, /docs\/private: 開けません/u);
 });
 
 test("-- の後は、- で始まる名前もファイルとして扱う", async (t) => {

@@ -109,19 +109,59 @@ test("npm が失敗したら、今の導入を変えずに止める", async (t) 
 test("ほかの導入が動いている (鍵がある) ときは、何も変えずに止める", async (t) => {
   const space = await workspace(t);
   await mkdir(`${space.installDir}.lock`, { recursive: true });
+  await writeFile(path.join(`${space.installDir}.lock`, "pid"), String(process.pid));
   const blocked = setup(space);
   assert.equal(blocked.status, 1);
-  assert.match(blocked.stderr, /ほかの導入が動いています/u);
+  assert.match(blocked.stderr, /ほかの導入が動いています（プロセス \d+）/u);
   assert.equal(existsSync(space.installDir), false);
   assert.equal(existsSync(space.binDir), false);
 });
 
-test("clone の中には導入しない", async (t) => {
+test("clone の中と、clone を含むフォルダには導入しない", async (t) => {
   const space = await workspace(t);
   const inside = setup({ ...space, installDir: path.join(packageDir, "installed") });
   assert.equal(inside.status, 1);
   assert.match(inside.stderr, /リポジトリの外/u);
   assert.equal(existsSync(path.join(packageDir, "installed")), false);
+  const ancestor = setup({ ...space, installDir: path.dirname(packageDir) });
+  assert.equal(ancestor.status, 1);
+  assert.match(ancestor.stderr, /clone を含むフォルダ/u);
+  assert.ok(existsSync(path.join(packageDir, "format.mjs")), "clone を動かさない");
+});
+
+test("途中で止まった導入の鍵 (プロセスが無い) は、退避した前の導入を戻してから導入し直す", async (t) => {
+  const space = await workspace(t);
+  assert.equal(setup(space).status, 0);
+  // 前の導入を退避した直後に止まった形を作る (導入先が無く、.old- と、止まったプロセスの番号の鍵が残る)。
+  const previous = `${space.installDir}.old-99999`;
+  const { renameSync } = await import("node:fs");
+  renameSync(space.installDir, previous);
+  await mkdir(`${space.installDir}.lock`);
+  await writeFile(path.join(`${space.installDir}.lock`, "pid"), "2147483646");
+  await mkdir(`${space.installDir}.new-99999`);
+  const again = setup(space);
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.match(again.stdout, /途中で止まった導入の鍵を片づけます/u);
+  assert.ok(existsSync(path.join(space.installDir, "install.json")));
+  assert.deepEqual(leftovers(space.root), []);
+});
+
+test("起動役がリンクでも、リンクの先を書き換えずに、起動役そのものを置き換える", async (t) => {
+  const space = await workspace(t);
+  await mkdir(space.binDir, { recursive: true });
+  const target = path.join(space.root, "target.txt");
+  await writeFile(target, "リンクの先");
+  const launcher = path.join(space.binDir, windows ? "mdfmt.cmd" : "mdfmt");
+  const { symlinkSync, lstatSync } = await import("node:fs");
+  try {
+    symlinkSync(target, launcher, "file");
+  } catch (error) {
+    if (error.code === "EPERM") return t.skip("この環境ではシンボリックリンクを作れない");
+    throw error;
+  }
+  assert.equal(setup(space).status, 0);
+  assert.equal(await readFile(target, "utf8"), "リンクの先");
+  assert.equal(lstatSync(launcher).isSymbolicLink(), false);
 });
 
 test("--check は何も変えずに、足りないものを知らせて 1 で終わる", async (t) => {
