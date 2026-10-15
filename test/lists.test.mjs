@@ -61,6 +61,8 @@ test("loose のリストの項目の間と、項目の中のブロックの間�
     const output = await assertFormats(options, input, expected, name);
     assert.equal(looseItems(output), 0, `${name}: 項目の段落が <p> で包まれない`);
     assert.equal(withoutParagraphs(output), withoutParagraphs(input), `${name}: 描画は <p> のほかは変わらない`);
+    // GFM でも同じに詰める。
+    await assertFormats({ ...options, flavor: "gfm" }, input, expected, `GFM ${name}`);
   }
 });
 
@@ -108,13 +110,13 @@ test("範囲を指定したときは、範囲に収まるリストだけを詰�
 
 test("項目の中に空行を足す修正 (MD031・MD032) は、詰まったリストを loose にしないので当てない", async (t) => {
   const options = await project(t);
-  for (const fixes of [{}, { tight_lists: false }]) {
+  for (const [fixes, flavor] of [[{}, "glfm"], [{ tight_lists: false }, "glfm"], [{}, "gfm"]]) {
     for (const [name, input] of [
       ["項目の中のフェンス", "- a\n  ```\n  x\n  ```\n- b\n"],
       ["段落の後の入れ子のリスト", "- a\n  - b\n- c\n"],
       ["タスクと番号付き", "1. a\n   - [ ] b\n   - [x] c\n2. d\n"],
     ]) {
-      const output = await assertFormats({ ...options, fixes }, input, input, `${name} ${JSON.stringify(fixes)}`);
+      const output = await assertFormats({ ...options, fixes, flavor }, input, input, `${name} ${flavor} ${JSON.stringify(fixes)}`);
       assert.equal(looseItems(output), 0, name);
     }
   }

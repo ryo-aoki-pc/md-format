@@ -220,7 +220,7 @@ test("HTML のブロックの無い文書と整形済みの文書は描画しな
 test("描画の比較の正規化", () => {
   const same = [
     ["<div><p>x</p></div>", "<div>\n  <p>x</p>\n</div>"],
-    ["<td> a </td>", "<td>a</td>"],
+    ["<table><td> a </td></table>", "<table><td>a</td></table>"],
     ["<p>a\n  b</p>", "<p>a b</p>"],
     ["a<br>\n b", "a<br>b"],
     ['<td colspan = "2"  align="right" >x</td>', '<td colspan="2" align="right">x</td>'],
@@ -237,6 +237,10 @@ test("描画の比較の正規化", () => {
     ['<td title="a  b">x</td>', '<td title="a b">x</td>'],
     ["<!-- a  b -->", "<!-- a b -->"],
     ["<p>本文</p>", "<p>本 文</p>"],
+    // 表の外の表の部品のタグと、空要素の閉じタグは、HTML の解析で捨てられるので、前後の空白が描画に出る。
+    ["<div><td><b>a</b></td><i>b</i></div>", "<div><td><b>a</b></td>\n<i>b</i></div>"],
+    ["<div><tr>a</tr> <i>b</i></div>", "<div><tr>a</tr><i>b</i></div>"],
+    ["<hr>x</hr><i>y</i>", "<hr>x</hr> <i>y</i>"],
   ];
   for (const [a, b] of different) assert.notEqual(normalizedHtml(a), normalizedHtml(b), `${a} と ${b} は別の描画`);
 });

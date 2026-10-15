@@ -692,8 +692,10 @@ test("CLI formats when its path goes through a symbolic link or junction", async
     const real = path.join(options.cwd, "real");
     const link = path.join(options.cwd, "link");
     await mkdir(real);
-    await copyFile(formatterPath, path.join(real, "format.mjs"));
-    await copyFile(path.join(path.dirname(formatterPath), "cli.mjs"), path.join(real, "cli.mjs"));
+    // 整形器は format.mjs と、それが読む同じフォルダの .mjs (cli.mjs・flavors.mjs)。導入スクリプトも同じものを写す。
+    for (const name of ["format.mjs", "cli.mjs", "flavors.mjs"]) {
+      await copyFile(path.join(path.dirname(formatterPath), name), path.join(real, name));
+    }
     await symlink(real, link, "junction");
     const child = spawnSync(process.execPath, [path.join(link, "format.mjs"), "--runtime-dir", runtimeDir, "--filename", options.filename,
       "--enable-fixes", "heading_conversion"], {

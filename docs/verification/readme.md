@@ -132,3 +132,69 @@ abiko-pi（中央値。カッコは最も遅い値）:
   手順を実機で通したときに、setup-notes-verification に記録する）
 - Neovim からの整形（LazyVimStarter の検証記録に記録する）
 - cmd の `--write`・BOM・CRLF と、PowerShell の標準入力
+
+## GFM 対応の検証（2026-10-16）
+
+対象はコミット `0d57ad1`（GFM の方言と、`--flavor`・`.md-format.json` を足した版。この後、上の節の検証記録の上に載せ直した）。環境と文書の集まりは、上の節と同じ。GitHub の描画は
+GitHub の Markdown API（`POST /markdown`。gh 2.102.0 の認証）で、送ったのは試験用に作った文書だけ。
+
+### 自動テスト
+
+- Windows: `npm test` の 202 件のうち 201 件が成功し、1 件を飛ばした
+- abiko-pi: 202 件のうち 201 件が成功し、1 件を飛ばした
+- どちらも、全 `.mjs` の `node --check` と `git diff --check` が通った
+
+### GLFM の出力が変わらないこと
+
+上の節と同じ比べ（7826bd8 の整形器と、`tight_lists` を外したこの版の GLFM の既定）で、既定の分類も全部の分類も、225 本すべてで出力が同じだった。
+
+### GitHub の描画で確かめた GFM の決まり（2026-10-15）
+
+`flavors.mjs` の GFM の値は、試験用の文書を GitHub の Markdown API で描いて決めた。`mode=gfm`（Issue やコメントの描画）で見たもの:
+
+- タスク: `[ ]`・`[x]`・`[X]` はタスクになり、`[~]` はただの文字になる（Comrak の `relaxedTasklistMatching` を使わない）
+- 数式: `$x^2$` と ``$`y`$`` は数式になる
+- alerts: `> [!note]`（小文字）も alerts になる。種類の後に題を書いた `> [!NOTE] 題` と、リストや引用の中に入れ子にした alerts は、普通の引用になる
+  （Comrak はどちらも alerts と読むので、GFM ではその範囲を修正しない）
+- tagfilter: `<title>`・`<iframe>` などは、文字としてエスケープされる
+- HTML の消毒: `section`・`details`・`div`・本物の表の部品は残る。`address`・`article`・`aside`・`header`・`footer`・`nav`・`main`・`figure`・
+  `figcaption`・`form`・`fieldset` などは、タグが消えて中の文字が残る（そのまわりの空白は描画に出る）。表の外の `td`・`tr` などと `</hr>` も、タグが消える。
+  `style`・`class` の属性は消え、`id` には `user-content-` が付く
+- 段落の中の改行は、`mode=gfm` では `<br>` になり、`mode=markdown`（文書の描画）では改行のまま。ただし `mode=markdown` は、タスク・alerts・数式・参照を描かない
+- `@octocat` は `mode=gfm` でユーザーへのリンクになる（`#1`・`GH-1`・コミットの SHA は、`context` の `ryo-aoki-pc/md-format` に当たるものが無いので、リンクにならない）
+
+### 整形の前と後の描画
+
+試験用の文書 3 本（front matter・見出し・リスト・alerts（小文字・題つき・入れ子）・タスク・表・数式・脚注・参照・行頭の `: `・`+++` の行・
+`<header>` や `<nav>` を含む HTML・`<details>`・HTML の表、loose のリストなど）を、この版で GFM として整形し、前と後を GitHub の API で描いた。
+
+- `mode=gfm`（`<br>` と改行の違いを除く）と `mode=markdown` の両方で、`tight_lists` を外したときは 3 本とも描画が同じだった
+- `tight_lists` を有効にすると、loose のリストのある 1 本で、`<li>` の直後の `<p>` が無くなったことだけが違った
+- loose のリストを集めた文書（上の節の試験用の文書）は、`mode=markdown` で `<li>` の直後の `<p>` が 16 から 2 になり、ほかは同じだった
+
+### 文書の集まりを GFM で整形する
+
+文書の集まりの 225 本を `--flavor gfm`・既定の分類で整形し、前と後を Comrak の GFM の解析と描画（tagfilter つき）で比べた。
+
+- 誤り 0。2 回目の整形で変わる文書 0。描画は、段落を包む `<p>` を除いて 225 本すべてで同じ
+- tight だったリストが loose になったもの 0。loose のリストの 715 個を詰め、18 個が残った（理由は GLFM と同じ）。整形で変わった文書は 168 本
+
+### 速さ
+
+上の節と同じ測り方。GLFM の既定は、上の節の版（PR 1 の先端）と比べた。
+
+| 文書（回数） | 上の節の版（既定） | この版（既定、GLFM） | この版（`--flavor gfm`） |
+| --- | ---: | ---: | ---: |
+| Windows 1 行（10 回） | 257 ms | 267 ms | 265 ms |
+| Windows README 386 行（10 回） | 356 ms | 354 ms | 342 ms |
+| Windows 15,092 行（5 回） | 6,206 ms | 5,871 ms | 6,309 ms |
+| abiko-pi 1 行（10 回） | 634 ms | 628 ms | 627 ms |
+| abiko-pi README 386 行（10 回） | 1,044 ms | 1,047 ms | 1,045 ms |
+| abiko-pi 15,092 行（5 回） | 16,482 ms | 16,607 ms | 16,109 ms |
+
+- GLFM の既定は、上の節の版と揺れの内で同じ。GFM も同じくらい（Windows は負荷の揺れが大きい）
+
+### この検証で未検証のこと
+
+- GitHub のリポジトリのファイル表示（blob）での描画（API の `mode=markdown` と `mode=gfm` で代わりに確かめた）
+- 実在する Issue・コミットへの参照のリンク

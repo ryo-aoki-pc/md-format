@@ -2,17 +2,21 @@
 
 `mdfmt`（[format.mjs](../../format.mjs)。Neovim の保存時と `<leader>cf` の整形も同じ）が、
 markdownlint の各ルールで Markdown をどう変えるかの一覧。loose のリストを詰めることは [loose のリストを詰める](#loose-のリストを詰める)、
-埋め込んだ HTML の整形は [HTML のブロック](#html-のブロック) にある。
+埋め込んだ HTML の整形は [HTML のブロック](#html-のブロック)、方言の違いは [GFM と GLFM の違い](#gfm-と-glfm-の違い) にある。
 
-- 整形する対象は、`mdfmt` の `--enable-fixes`・`--disable-fixes` に、下の分類名かルール名（`MD026`・`no-trailing-punctuation`）を
-  カンマで区切って渡して選ぶ。書かない分類は既定のまま。Neovim（LazyVimStarter）では `lua/plugins/lang-markdown.lua` の `format_fixes` の表で選ぶ
-- ルール名の指定は分類の指定より優先する。名前の大文字小文字は区別しない。プロジェクトのカスタムルールも、その名前で選べる（既定で有効）
+- 整形する対象は、`--enable-fixes`・`--disable-fixes` か `.md-format.json` の `fixes` で、下の分類名かルール名（`MD026`・`no-trailing-punctuation`）を選ぶ。
+  書かない分類は既定のまま。Neovim（LazyVimStarter）では `lua/plugins/lang-markdown.lua` の `format_fixes` の表で選ぶ（引数になる）
+- 引数のルール名 → 引数の分類 → 設定ファイルのルール名 → 設定ファイルの分類 → 既定の順に決める。名前の大文字小文字は区別しない。
+  プロジェクトのカスタムルールも、その名前で選べる（既定で有効）
 - 選ぶのは整形だけ。markdownlint の診断は変わらない。診断ごと止めるときは、markdownlint の設定でルールを無効にする
 - どの設定でも、Comrak で読んだ構造（見出し・段落・リストの所属と開始番号・リストの tight・強調・リンク・強制改行など）が変わる修正と、
-  GitLab の記法（`#123`・`~label`・`@user` などの参照・`[[_TOC_]]` と wiki のリンク・`::include`・画像の `{width=…}` など）を変える修正は当てない。
+  方言ごとに守る記法（GLFM の `#123`・`~label`・`[[_TOC_]]`・`::include`、GFM の `GH-123`・`@org/team` など）を変える修正は当てない。
   ただし、見出し・強調・リンクを作る修正（`heading_conversion`・`emphasis_spaces`・`reversed_links`）は、有効にすると構造を変えて当てる（リストの tight は変えない）
-- 知らない名前や、同じルールを有効と無効の両方に書いたときは、整形せずにエラーにする（文書は変わらない）
-- 例は markdownlint の既定の設定（全ルール有効）で整形した結果。`␣` は空白、`⇥` はタブを表す（見えない文字を見えるようにするため）。
+- 引数の知らない名前や、同じ層で同じルール名や別名を有効と無効の両方に書いたときは、整形せずにエラーにする（文書は変わらない）。
+  `.md-format.json` の `fixes` の知らない名前は、警告を出して無視する。
+  カスタムルールの別名どうしの衝突は、そのルールの診断が出た文書でだけエラーになる（markdownlint-cli2 がカスタムルールの名前の一覧を返さず、
+  診断の名前で別名を結びつけるため）
+- 例は markdownlint の既定の設定（全ルール有効）で整形した結果。`flavor=gfm` を付けた例は GFM、ほかは GLFM。`␣` は空白、`⇥` はタブを表す（見えない文字を見えるようにするため）。
   [test/reference.test.mjs](../../test/reference.test.mjs) が、この文書の例をすべて整形し直して確かめる
 
 ## 一覧
@@ -862,11 +866,11 @@ GitLab のラベルの参照 (`~"javascript"`) の中は変えない (参照先�
 
 ## HTML のブロック
 
-分類 `html`、既定で有効。markdownlint のルールではないので、上の一覧の表には入れない。止めるときは `html` を無効にする（`--disable-fixes html`）。
+分類 `html`、既定で有効。markdownlint のルールではないので、上の一覧の表には入れない。止めるときは `--disable-fixes html` か `.md-format.json` の `fixes` に `"html": false` を書く。
 
 - 行頭のタグで始まり空行で終わる HTML のブロックを、[js-beautify](https://github.com/beautifier/js-beautify) でタグの入れ子に合わせて 2 つずつ字下げする。
   ブロック要素 (`<tr>`・`<td>`・`<li>` など) は 1 行ずつにし、インライン要素 (`<b>`・`<code>` など) と文の行は分けない。折り返さない
-- 整形の前後で、Comrak の HTML の描画 (描画に出ない空白の違いを除く)・Markdown の構造・GitLab の記法が変わらないブロックだけを直す。
+- 整形の前後で、Comrak の HTML の描画 (描画に出ない空白の違いを除く)・Markdown の構造・方言ごとに守る記法が変わらないブロックだけを直す。
   `<pre>`・`<textarea>`・`<code>`・`<kbd>`・`<samp>` の中の空白は変えない。インライン要素どうしの間の空白の有無も変えない
 - HTML の中に Markdown を書くとき (空行で区切る) は、HTML の断片ごとに整形し、間の Markdown と空行は変えない。
   断片の 1 行目は入れ物の字下げのままにする (4 つ以上字下げすると、空行の後ではコードブロックになるため)。そのため、閉じタグだけの断片は行頭に並ぶ
@@ -1112,7 +1116,7 @@ Markdown をはさんだ入れ子は、内側の断片も行頭から字下げ�
 
 ## loose のリストを詰める
 
-分類 `tight_lists`、既定で有効。markdownlint のルールではないので、上の一覧の表には入れない。止めるときは `tight_lists` を無効にする（`--disable-fixes tight_lists`）。
+分類 `tight_lists`、既定で有効。markdownlint のルールではないので、上の一覧の表には入れない。止めるときは `--disable-fixes tight_lists` か `.md-format.json` の `fixes` に `"tight_lists": false` を書く。
 
 - 項目の間か、1 つの項目の中のブロックの間に空行のあるリスト (loose のリスト) は、項目の段落が `<p>` で包まれ、項目の間が広く描かれる。
   その空行を消して、詰まった (tight の) リストにする。描画で変わるのは、項目の段落を包む `<p>` が無くなることだけ
@@ -1199,4 +1203,167 @@ Markdown をはさんだ入れ子は、内側の断片も行頭から字下げ�
 
       字下げのコード
 - 次
+```
+
+## GFM と GLFM の違い
+
+既定は GLFM。`--flavor gfm` または `.md-format.json` の `"flavor": "gfm"` で GFM に切り替える。設定の探し方と優先順は [README の方言の選び方](../../README.md#方言の選び方) にある。
+この節の `flavor=gfm` が付いた例は GFM、それ以外の例は既定の GLFM で検証する。
+
+### front matter
+
+GLFM は文書の先頭の `---`・`+++`・`;;;` を front matter の区切りとして守る。GFM は YAML の `---` だけを守り、`+++`・`;;;`・`{` は本文として扱う。markdownlint に渡す区切りも、同じ方言に合わせる。
+
+GLFM では変わらない:
+
+```markdown 変わらない
++++
+#␣␣見出し
++++
+```
+
+GFM では本文の見出しを整形する。整形前:
+
+```markdown 整形前 flavor=gfm
++++
+#␣␣見出し
++++
+```
+
+整形後:
+
+```markdown 整形後
++++
+
+# 見出し
+
++++
+```
+
+YAML の中は変わらない:
+
+```markdown 変わらない flavor=gfm
+---
+title: 見出し␣
+---
+
+本文
+```
+
+### 説明リストと複数行の引用
+
+GLFM の `用語` に続く `: 説明` は説明リスト、`>>>` は複数行の引用になる。GFM にはどちらの拡張も無く、説明リストのための投影も使わない。
+
+GFM では、次の箇条書きは説明リストの中ではないため、行頭へ揃える。整形前:
+
+```markdown 整形前 flavor=gfm
+用語
+: 説明
+
+␣␣- 項目
+```
+
+整形後:
+
+```markdown 整形後
+用語
+: 説明
+
+- 項目
+```
+
+GFM の `>>>` は普通の引用記号として読み、続く見出しの余分な空白を直す。構造が変わる空行は足さない。整形前:
+
+```markdown 整形前 flavor=gfm
+>>>
+#␣␣見出し
+>>>
+```
+
+整形後:
+
+```markdown 整形後
+>>>
+# 見出し
+>>>
+```
+
+### タスク・数式・参照
+
+GFM のタスクは `[ ]`・`[x]`・`[X]`。GLFM の `[~]` は GFM では普通の文字になる。両方の方言で、数式 `$…$`・バッククォート付きの `` $`…`$ ``・`$$…$$`・`math` コードブロックの中身を守る。
+
+GFM で守る参照は `#123`・`GH-123`・`owner/repo#123`・`@user`・`@org/team`・7〜40 桁の 16 進の SHA と `user@sha`・`owner/repo@sha`、`:emoji:` と脚注 `[^x]`。Issue や PR の本文・コメントでも使えるよう、リポジトリのファイルでリンクにならない参照も広めに守る。`heading_conversion` を有効にしても、行頭の `#123` を見出しにしない。MD051 は両方でリンクの断片の大文字小文字だけを直す。
+
+変わらない:
+
+```markdown 変わらない flavor=gfm fixes=heading_conversion
+#123 の対応
+
+GH-123 と owner/repo#123、@user と @org/team
+abcdef0 と user@1234567 と owner/repo@89abcdef、:smile: と脚注[^x]
+
+- [ ] 未完了
+- [x] 完了
+- [X] 完了
+- [~] 普通の文字
+
+数式 $a^2$ と $`b^2`$
+
+[^x]: 脚注の本文
+```
+
+GLFM ではこのほか、`!123`・`&123`・`$123`・`~label`・`%milestone`・`[[_TOC_]]`・wiki のリンク・`::include`・`{+ +}`・画像の `{width=…}` なども守る。GFM では GitLab だけの記法を特別には守らず、普通の文字として構造と描画を比べる。
+
+### alerts
+
+GFM の `> [!note]` は小文字でも alerts になる。種類の後に題を書いた `> [!NOTE] 題` と、リストや引用の中に入れ子にした alerts は、GitHub では普通の引用になるが、Comrak は alerts と読む。この差で描画を変えないよう、GFM では、そうした範囲に触れる修正（loose のリストを詰めることを含む）をすべて見送る。
+
+題のある引用の中の見出しも変わらない:
+
+```markdown 変わらない flavor=gfm
+> [!NOTE] 題
+> #␣␣見出し
+```
+
+### HTML の比較
+
+GFM の HTML の比較は tagfilter を有効にする。`title`・`textarea`・`style`・`xmp`・`iframe`・`noembed`・`noframes`・`script`・`plaintext` のタグは、GitHub でエスケープされて文字として描かれるため、その空白の違いも確かめる。
+
+GitHub がタグだけを消す `header`・`article`・`form` などは、前後の空白が本文に出ることがある。GFM では、そのタグを空白の比較から除外しない。次の例では外側の `div` を整形しても、`header` と `i` の間に空白を足さない。
+
+整形前:
+
+```markdown 整形前 flavor=gfm
+<div><header><b>a</b></header><i>b</i></div>
+```
+
+整形後:
+
+```markdown 整形後
+<div>
+  <header><b>a</b></header><i>b</i>
+</div>
+```
+
+変わらない:
+
+```markdown 変わらない flavor=gfm
+<title>そのまま</title>
+```
+
+残るタグの HTML の表は、GFM でも整形する。整形前:
+
+```markdown 整形前 flavor=gfm
+<table><tr><td>a</td><td>b</td></tr></table>
+```
+
+整形後:
+
+```markdown 整形後
+<table>
+  <tr>
+    <td>a</td>
+    <td>b</td>
+  </tr>
+</table>
 ```
