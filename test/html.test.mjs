@@ -30,7 +30,8 @@ async function project(t) {
   const cwd = await mkdtemp(path.join(tmpdir(), "glfm-html-test-"));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   await writeFile(path.join(cwd, ".markdownlint.json"), JSON.stringify({ default: true }));
-  return { filename: path.join(cwd, "example.md"), cwd, runtimeDir };
+  // HTML のブロックの整形だけを確かめる。入れ物の中の例は loose のリストのまま保つ (詰めることは lists.test.mjs で確かめる)。
+  return { filename: path.join(cwd, "example.md"), cwd, runtimeDir, fixes: { tight_lists: false } };
 }
 
 // 整形の結果が expected になり、2 回目で変わらず、近道の有無で同じで、整形の前後で描画が変わらないこと。

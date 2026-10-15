@@ -161,9 +161,11 @@ test("the sublist marker style follows real list nesting inside descriptions and
         input: "- Outside \n\nTerm\n: Description \n\n  - child \n    - grandchild \n\n    - sibling \n",
       },
     ];
+    // loose のリストのまま記号の決まりを確かめる (詰めることは lists.test.mjs で確かめる)。
+    const keepLoose = { ...options, fixes: { tight_lists: false } };
     for (const variant of variants) {
       assert.equal(descriptionNodeCount(variant.input, "DescriptionList"), variant.definitions || 1, variant.name);
-      const formatted = await formatMarkdown(variant.input, options);
+      const formatted = await formatMarkdown(variant.input, keepLoose);
       const variantStyles = markers(formatted);
       assert.equal(variantStyles.Outside, "-", variant.name);
       assert.equal(variantStyles.child, variantStyles.Outside, variant.name);
@@ -172,7 +174,7 @@ test("the sublist marker style follows real list nesting inside descriptions and
       assert.ok(!formatted.split("\n").some((line) => line.endsWith(" ")), variant.name);
       assert.equal(rendered(formatted), rendered(variant.input), variant.name);
       assert.deepEqual(definitionHTML(formatted), definitionHTML(variant.input), variant.name);
-      assert.equal(await formatMarkdown(formatted, options), formatted, variant.name);
+      assert.equal(await formatMarkdown(formatted, keepLoose), formatted, variant.name);
       assert.equal(
         formatted.replace(/([*+-]) (grandchild|sibling)$/gm, "- $2"),
         variant.input.replace(/ +$/gm, ""),

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { builtinRuleNames, defaultDisabledCategories, fixCategories, formatMarkdown, htmlCategory } from "../format.mjs";
+import { builtinRuleNames, defaultDisabledCategories, fixCategories, formatMarkdown, htmlCategory, tightListsCategory } from "../format.mjs";
 
 // docs/reference/rules.md と README の「整形の例」の例を、書いてあるとおりに整形できるかを確かめる (文書と動作をずらさない)。
 const packageDir = fileURLToPath(new URL("../", import.meta.url));
@@ -45,14 +45,16 @@ function addExample(section, { info, literal }, pending) {
 }
 
 // ### MDxxx の節ごとに、例 (整形前と整形後・変わらない) と markdownlint の設定を集める。
-// ## HTML のブロック の下の ### の節は、html:<見出し> の名前で集める。
+// markdownlint のルールでない分類の節 (## HTML のブロック・## loose のリストを詰める) の下の ### の節は、
+// html:<見出し>・tight:<見出し> の名前で集める。
+const categorySections = new Map([["HTML のブロック", "html"], ["loose のリストを詰める", "tight"]]);
 const sections = new Map();
 let table;
 let withoutFixes;
 {
   let section;
   let pending;
-  let html = false;
+  let prefix;
   for (const index of walk(nodes)) {
     const node = nodes[index];
     const type = typeOf(node);
@@ -60,10 +62,10 @@ let withoutFixes;
     if (type === "Paragraph" && textOf(nodes, index).startsWith("自動修正の無いルール:")) {
       withoutFixes = textOf(nodes, index).match(/MD\d{3}/gu);
     }
-    if (type === "Heading" && node.data.value.Heading.level === 2) html = textOf(nodes, index) === "HTML のブロック";
+    if (type === "Heading" && node.data.value.Heading.level === 2) prefix = categorySections.get(textOf(nodes, index));
     if (type === "Heading" && node.data.value.Heading.level === 3) {
-      const id = textOf(nodes, index).match(/^MD\d{3}/u)?.[0] ?? (html ? `html:${textOf(nodes, index)}` : undefined);
-      assert.ok(id && !sections.has(id), `見出し ${textOf(nodes, index)} はルールか HTML の節で、重ならない`);
+      const id = textOf(nodes, index).match(/^MD\d{3}/u)?.[0] ?? (prefix ? `${prefix}:${textOf(nodes, index)}` : undefined);
+      assert.ok(id && !sections.has(id), `見出し ${textOf(nodes, index)} はルールか分類の節で、重ならない`);
       section = { id, config: {}, examples: [] };
       sections.set(id, section);
     }
@@ -136,6 +138,15 @@ test("the HTML block section shows the category and examples for tables, nested 
   assert.ok(html.flatMap(([, section]) => section.examples).some(({ input, expected }) => input !== expected),
     "HTML の節に、整形で変わる例がある");
   assert.equal(htmlCategory, "html");
+});
+
+test("the tight list section shows the category and examples that tighten and that keep loose lists", () => {
+  const tight = [...sections].filter(([id]) => id.startsWith("tight:"));
+  assert.deepEqual(tight.map(([id]) => id), ["tight:項目の間", "tight:項目の中のブロックの間", "tight:変えないもの"]);
+  const examples = tight.flatMap(([, section]) => section.examples);
+  assert.ok(examples.some(({ input, expected }) => input !== expected), "詰める例がある");
+  assert.ok(examples.some(({ input, expected }) => input === expected), "変わらない例がある");
+  assert.equal(tightListsCategory, "tight_lists");
 });
 
 test("every example in the reference formats exactly as documented with all markdownlint rules enabled", async (t) => {

@@ -64,6 +64,8 @@ export const fixCategories = Object.freeze({
 export const defaultDisabledCategories = Object.freeze(["heading_conversion", "emphasis_spaces", "reversed_links", "unused_definitions"]);
 // HTML のブロックの整形 (markdownlint の修正ではない分類)。既定で有効。
 export const htmlCategory = "html";
+// loose のリストを詰めて tight にする (markdownlint の修正ではない分類)。既定で有効。
+export const tightListsCategory = "tight_lists";
 // 中の空白がそのまま描画に出る要素。整形でも中身を変えず、描画の比較でも原文のまま比べる。
 const whitespaceElements = Object.freeze(["pre", "textarea", "script", "style", "code", "kbd", "samp"]);
 // 前後の空白が描画に出ない要素 (ブロック要素・表の要素・<br>)。描画の比較では、このタグに接する空白を比べない。
@@ -510,13 +512,13 @@ function editDistance(a, b) {
 // markdownlint と同じく、名前の大文字小文字は区別しない。
 function fixTarget(name) {
   const lower = name.toLowerCase();
-  if (Object.hasOwn(fixCategories, lower) || lower === htmlCategory) return `category:${lower}`;
+  if (Object.hasOwn(fixCategories, lower) || lower === htmlCategory || lower === tightListsCategory) return `category:${lower}`;
   const id = name.toUpperCase();
   if (Object.hasOwn(ruleAliases, id)) return `rule:${id}`;
   if (ruleIdsByAlias.has(lower)) return `rule:${ruleIdsByAlias.get(lower)}`;
   // 分類名やルール名の綴り違いを、カスタムルールの名前として黙って受け取らない。
   // 分類名の形 (英字と _ だけ) と MD の番号の形は、カスタムルールの名前にしない。
-  const known = [...Object.keys(fixCategories), htmlCategory, ...ruleIdsByAlias.keys()];
+  const known = [...Object.keys(fixCategories), htmlCategory, tightListsCategory, ...ruleIdsByAlias.keys()];
   if (/^MD\d+$/iu.test(name) || /^[a-z_]+$/iu.test(name) || known.some((candidate) => editDistance(lower, candidate) <= 2)) {
     throw new Error(`整形する対象 ${name} は、分類名にもルール名にもありません。`);
   }
@@ -536,7 +538,8 @@ function fixSelector(fixes) {
     }
     chosen.set(target, enabled);
   }
-  // ルール名の指定 > 分類の指定 > 既定。HTML のブロックの整形は markdownlint の修正ではないので、select.html で別に返す。
+  // ルール名の指定 > 分類の指定 > 既定。HTML のブロックの整形と、loose のリストを詰めることは markdownlint の修正ではないので、
+  // select.html と select.tightLists で別に返す。
   const select = (fix) => {
     const id = ruleId(fix);
     if (Object.hasOwn(ruleAliases, id)) {
@@ -553,6 +556,7 @@ function fixSelector(fixes) {
     return values.size ? [...values][0] : true;
   };
   select.html = chosen.get(`category:${htmlCategory}`) ?? true;
+  select.tightLists = chosen.get(`category:${tightListsCategory}`) ?? true;
   return select;
 }
 
@@ -574,8 +578,13 @@ function semanticSnapshot(source, parse) {
   if (!Array.isArray(nodes) || !nodes.length) throw new Error("Markdown を解析できません。");
   const descriptions = [];
   const literals = [];
+  // リストと説明の項目の tight (詰まっているか) を、文書の順に並べる。どの修正も、この並びを変えたら当てない
+  // (loose になると、項目の段落が <p> で包まれて描画が変わる)。構文木を比べない修正 (見出しなどを作る修正と
+  // カスタムルール) も、ここで止める。
+  const lists = [];
   for (let index = 0; index < nodes.length; index++) {
     const type = nodeType(nodes[index]);
+    if (type === "List" || type === "DescriptionItem") lists.push(nodes[index].data.value[type].tight);
     if (type === "DescriptionList") {
       // 入れ子を含む全項目を比較し、親の引用やリストからの移動も検出する。
       descriptions.push([containerPath(nodes, index), canonicalNode(nodes, index)]);
@@ -588,7 +597,7 @@ function semanticSnapshot(source, parse) {
   const atoms = [...source.matchAll(gitlabAtoms)].map((match) => match[0]);
   // loose (緩い検査) は最初の文書と比べ続ける。tree (構文木の全体) は、受け付けた文書ごとに取り直す。
   return {
-    loose: JSON.stringify({ frontMatter: matter?.raw || null, descriptions, literals, atoms }),
+    loose: JSON.stringify({ frontMatter: matter?.raw || null, descriptions, literals, atoms, lists }),
     atoms: JSON.stringify(atoms),
     tree: canonicalNode(nodes, 0),
   };
@@ -1086,7 +1095,8 @@ function applyHtmlEdits(source, edits) {
 
 // HTML のブロックを整形して、描画と構造の変わらないものだけを当てる。
 // 1. 描画: Comrak の HTML (生の HTML を出す) を normalizedHtml で比べる
-// 2. 構造: 構文木の全体を、HtmlBlock の中身だけ normalizedHtml にして比べる (ブロックの分割・結合や、Markdown の行の取り込みを見つける)
+// 2. 構造: 構文木の全体を、HtmlBlock の中身だけ normalizedHtml にして比べる (ブロックの分割・結合や、Markdown の行の取り込み、
+//    リストの tight の変化を見つける)
 // 3. GitLab の記法: 原文と並びを比べる
 // 4. 整形したブロックの literal が整形の結果と同じ (2 回目の整形で変わらない)
 // まとめて当てて 1 回で確かめ、変わるときだけ半分に分けて原因のブロックを外す。ブロックどうしは重ならない。
@@ -1134,6 +1144,103 @@ function formatHtmlBlocks(source, { parse, render, beautify, selection, exhausti
 
 // 試験用。描画の比較に使う正規化。
 export const htmlInternals = Object.freeze({ normalizedHtml });
+
+// 空行の後に、リストの印か字下げした行が続く所 (入れ物の > の後を含む)。loose のリストの無い文書を、解析せずに見分ける
+// (広めに当たっても解析が 1 回増えるだけ)。
+const looseListHint = new RegExp(String.raw`^[ \t]*(?:>[ \t]?)*[ \t]*\r?\n(?:[ \t]*>[ \t]?)*` +
+  String.raw`(?:[ \t]*(?:[-+*]|\d{1,9}[.)])(?:[ \t]|\r?$)|(?: {2,}|\t)[ \t]*\S)`, "mu");
+
+// loose のリストごとに、詰めるために消す行 (1 から数える)。消すのは、となり合う項目の間と、1 つの項目の中のとなり合う
+// ブロックの間の空行 (引用の中では > だけの行) だけ。コード・HTML・数式・入れ子のリストなどの中の行と、最後の項目の後の行は
+// 消さない (項目の子のブロックの間しか見ないので、子の中の行には触れない)。詰めると段落がつながるリスト (1 つの項目に
+// 段落が続けて 2 つある・段落の後に字下げのコードがある) は見送る。ほかの詰められないもの (段落を割り込めないブロックが
+// 続くものなど) は、当てた後の確かめで落とす。範囲を指定したときは、範囲に収まるリストだけを扱う。
+function listTighteningEdits(lines, nodes, selection) {
+  const edits = [];
+  const blank = (row) => /^[ \t>]*$/u.test(lines[row - 1]?.content ?? "x");
+  for (let index = 0; index < nodes.length; index++) {
+    if (nodeType(nodes[index]) !== "List" || nodes[index].data.value.List.tight) continue;
+    const { start, end } = nodes[index].data.sourcepos;
+    if (selection && (lines[start.line - 1].start < selection.start ||
+        lines[end.line - 1].start + lines[end.line - 1].content.length > selection.end)) continue;
+    const rows = [];
+    let mergeable = true;
+    const items = childIndices(nodes, index);
+    items.forEach((item, position) => {
+      const children = childIndices(nodes, item);
+      for (let child = 1; child < children.length; child++) {
+        const [previous, next] = [nodes[children[child - 1]], nodes[children[child]]];
+        if (nodeType(previous) === "Paragraph" && (nodeType(next) === "Paragraph" ||
+            (nodeType(next) === "CodeBlock" && !next.data.value.CodeBlock.fenced))) mergeable = false;
+        for (let row = previous.data.sourcepos.end.line + 1; row < next.data.sourcepos.start.line; row++) rows.push(row);
+      }
+      if (position + 1 < items.length) {
+        const last = children.length ? nodes[children.at(-1)].data.sourcepos.end.line : nodes[item].data.sourcepos.start.line;
+        for (let row = last + 1; row < nodes[items[position + 1]].data.sourcepos.start.line; row++) rows.push(row);
+      }
+    });
+    if (mergeable && rows.length && rows.every(blank)) edits.push({ list: index, rows });
+  }
+  return edits;
+}
+
+function deleteRows(source, lines, rows) {
+  let result = source;
+  for (const row of [...rows].sort((a, b) => b - a)) {
+    const line = lines[row - 1];
+    result = result.slice(0, line.start) + result.slice(line.start + line.content.length + line.ending.length);
+  }
+  return result;
+}
+
+// 2 つの解析の結果が、targets のリストの tight が false から true になったことを除いて、ノードごとに同じか。
+// 空行を消すだけなら、ノードの数・親子と兄弟のつながり・中身は変わらない。
+function sameTreeExceptTight(before, after, targets) {
+  if (before.length !== after.length) return false;
+  for (let index = 0; index < before.length; index++) {
+    const [left, right] = [before[index], after[index]];
+    if (left.parent !== right.parent || left.first_child !== right.first_child || left.next_sibling !== right.next_sibling ||
+        nodeType(left) !== nodeType(right)) return false;
+    const [leftValue, rightValue] = [nodeValue(left), nodeValue(right)];
+    if (targets.has(index)) {
+      if (leftValue.tight !== false || rightValue.tight !== true) return false;
+      if (JSON.stringify({ ...leftValue, tight: true }) !== JSON.stringify(rightValue)) return false;
+    } else if (JSON.stringify(leftValue) !== JSON.stringify(rightValue)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// loose のリストを詰めて tight にする (分類 tight_lists)。当てた後の構文木が、対象のリストの tight のほかはノードごとに
+// 同じものだけを当てる (描画は、対象の項目の段落を包む <p> が無くなることだけが変わる)。まとめて当てて 1 回で確かめ、
+// 違うときだけ半分に分けて原因のリストを外す。リストどうしの消す行は重ならない。
+function tightenLists(source, { parse, selection, exhaustive }) {
+  if (!exhaustive && !looseListHint.test(source)) return source;
+  const lines = linesOf(source);
+  const before = parse(parsedText(source, lines).text);
+  const edits = listTighteningEdits(lines, before, selection);
+  if (!edits.length) return source;
+  const accepted = [];
+  const apply = (chosen) => deleteRows(source, lines, chosen.flatMap((edit) => edit.rows));
+  const accept = (batch) => {
+    if (!batch.length) return;
+    const chosen = [...accepted, ...batch];
+    const candidate = apply(chosen);
+    if (sameTreeExceptTight(before, parse(parsedText(candidate, linesOf(candidate)).text), new Set(chosen.map((edit) => edit.list)))) {
+      accepted.push(...batch);
+      return;
+    }
+    if (batch.length === 1) return;
+    const middle = Math.ceil(batch.length / 2);
+    accept(batch.slice(0, middle));
+    accept(batch.slice(middle));
+  };
+  accept(edits);
+  const result = apply(accepted);
+  if (selection) selection.end += result.length - source.length;
+  return result;
+}
 
 export async function formatMarkdown(source, options = {}) {
   if (typeof source !== "string") throw new TypeError("Markdown の入力は文字列にしてください。");
@@ -1189,6 +1296,10 @@ export async function formatMarkdown(source, options = {}) {
   const finish = (text) => (selected.html
     ? formatHtmlBlocks(text, { parse, render, beautify, selection, exhaustive })
     : text);
+  // loose のリストを最初に詰める。詰めた文書を、この後の修正の基準 (緩い検査の最初の文書) にする。詰める処理は構文木を
+  // ノードごとに確かめるので、基準を替えても、守る記法・リテラル・ほかのリストの tight は元の文書と同じ。
+  // markdownlint の修正 (MD031・MD032 など) が項目の中に空行を足して loose に戻すものは、緩い検査のリストの並びで落ちる。
+  const start = selected.tightLists ? tightenLists(source, { parse, selection, exhaustive }) : source;
   const snapshots = new Map();
   const snapshotOf = (text) => {
     if (!snapshots.has(text)) {
@@ -1199,7 +1310,7 @@ export async function formatMarkdown(source, options = {}) {
   };
   // 最初の文書の検査の値。修正候補を確かめるときに初めて作る。
   let original;
-  const originalOf = () => (original ??= snapshotOf(source));
+  const originalOf = () => (original ??= snapshotOf(start));
   // 構文木の全体は、最後に受け付けた文書と比べる (見出しなどを作る修正の後も、その先の修正を確かめられる)。
   // 変えてよい差の決まったルール (limitedRules) がまとめに入っていれば、その差だけを両方の木から消して比べる。
   // 表記の修正は見出しの句読点やリンクの文字を変えないので、同じまとめで確かめても見逃さない。
@@ -1213,8 +1324,8 @@ export async function formatMarkdown(source, options = {}) {
     if (!currentKeys.has(key)) currentKeys.set(key, structureKey(currentTree, rules));
     return currentKeys.get(key);
   };
-  const visited = new Set([source]);
-  let current = source;
+  const visited = new Set([start]);
+  let current = start;
   let attempted = 0;
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     let fixes = await lint(current, dependencies, settings);
