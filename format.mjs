@@ -44,9 +44,12 @@ export const fixCategories = Object.freeze({
   unused_definitions: ["MD053"],
   tables: ["MD060"],
   proper_names: ["MD044"],
+  line_length: ["MD013"],
 });
-// 既定では直さない分類 (見出し・強調・リンクを作る修正と、本文の行を消す修正)。
-export const defaultDisabledCategories = Object.freeze(["heading_conversion", "emphasis_spaces", "reversed_links", "unused_definitions"]);
+// 既定では直さない分類 (見出し・強調・リンクを作る修正と、本文の行を消す修正と、長い行を折る修正)。
+export const defaultDisabledCategories = Object.freeze([
+  "heading_conversion", "emphasis_spaces", "reversed_links", "unused_definitions", "line_length",
+]);
 // HTML のブロックの整形 (markdownlint の修正ではない分類)。既定で有効。
 export const htmlCategory = "html";
 // loose のリストを詰めて tight にする (markdownlint の修正ではない分類)。既定で有効。
@@ -922,7 +925,10 @@ async function lint(source, { main }, { filename, cwd, config, stats, flavor, ob
   // Windows のドライブ文字の大小が違っても同じファイルと見なす。
   const ownResults = results.filter((result) => path.relative(path.resolve(cwd, result.fileName), filename) === "");
   observeRules?.(ownResults);
-  return ownResults.filter((result) => result.fixInfo);
+  // MD013 (長すぎる行) は自動修正を持たないので、折り返しの手がかりとして別に返す。
+  const fixes = ownResults.filter((result) => result.fixInfo);
+  fixes.longLines = ownResults.filter((result) => !result.fixInfo && result.ruleNames[0] === "MD013");
+  return fixes;
 }
 
 function isInside(directory, file) {
@@ -960,7 +966,12 @@ function inRange(lines, fix, selection) {
   // fixInfo は UTF-16 なので、変換済みの選択範囲と直接比較できる。
   let fixStart = line.start + column - 1;
   let fixEnd = fixStart + Math.max(0, fix.fixInfo.deleteCount || 0);
-  if (fix.fixInfo.deleteCount === -1 || /\r|\n/u.test(fix.fixInfo.insertText || "")) {
+  // 行を足し引きする修正は、行の全体が選択に入るときだけ当てる。折り返し (作った MD013 の修正) は、行の中身の全体が
+  // 選択に入るときだけ当てる (折る所は行の全体で決めるので、一部だけを選んだ行は折らない)。
+  if (fix.wrap) {
+    fixStart = line.start;
+    fixEnd = line.start + line.content.length;
+  } else if (fix.fixInfo.deleteCount === -1 || /\r|\n/u.test(fix.fixInfo.insertText || "")) {
     fixStart = line.start;
     fixEnd = line.start + line.content.length + line.ending.length;
   }
@@ -1204,6 +1215,156 @@ function formatHtmlBlocks(source, { parse, render, beautify, selection, exhausti
 // 試験用。描画の比較に使う正規化。
 export const htmlInternals = Object.freeze({ normalizedHtml });
 
+// 全角の文字 (Unicode の East Asian Width が F・W・H の文字と、絵文字。広めに取る)。両側が全角の空白で折ると、Firefox などは
+// 改行を消す (CSS Text の segment break の決まり) ので、空白が見えなくなる。ハングルは、この決まりの外 (改行が空白になる)。
+// 広めに当たっても、折る所が減るだけ。
+const wideCharacter = new RegExp("[" + [
+  String.raw`\u1100-\u115f\u2329\u232a\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4dc0-\u4dff\u4e00-\u9fff\ua000-\ua4cf`,
+  String.raw`\ua960-\ua97f\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uff61-\uffdc\uffe0-\uffe6\uffe8-\uffee`,
+  String.raw`\u{16fe0}-\u{16fff}\u{17000}-\u{18d7f}\u{1aff0}-\u{1b2ff}\u{1f000}-\u{1faff}\u{20000}-\u{3fffd}\p{Emoji_Presentation}`,
+].join("") + "]", "u");
+const hangul = /\p{sc=Hangul}/u;
+// 前の字に付く文字 (結合文字・異体字セレクタ・ZWJ・肌の色)。全角かどうかは、その前の字で決める。
+const attachedCharacter = /[\p{M}\u200d\u{1f3fb}-\u{1f3ff}]/u;
+
+// text の from の前と to の字が、どちらも全角か (サロゲートペアの字も 1 字として見る)。
+function wideAround(text, from, to) {
+  const wide = (character) => wideCharacter.test(character) && !hangul.test(character);
+  let index = from;
+  let before = "";
+  while (index > 0) {
+    const low = text.charCodeAt(index - 1);
+    index -= low >= 0xdc00 && low <= 0xdfff && index >= 2 && (text.charCodeAt(index - 2) & 0xfc00) === 0xd800 ? 2 : 1;
+    before = String.fromCodePoint(text.codePointAt(index));
+    if (!attachedCharacter.test(before)) break;
+  }
+  return to < text.length && wide(before) && wide(String.fromCodePoint(text.codePointAt(to)));
+}
+// 折った後の行の頭が、ブロックの記法になる形 (リストの印・見出し・引用・区切り線・setext の下線・フェンス・表・HTML・脚注と
+// リンクの定義・数式のブロック)。続きの行の頭は段落の中身の桁にそろえるので、そこから始まる新しいブロックにならないようにする。
+// alerts の [!NOTE] も、行の頭に来ないようにする (広めに避ける)。
+const blockStart = /^(?:[-+*](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|#{1,6}(?:[ \t]|$)|>|[=-]+[ \t]*$|(?:[*_-][ \t]*){3,}$|`{3}|~{3}|\||:?-+:?[ \t]*(?:\||$)|<|\[\^[^\]]*\]:|\[[^\]]+\]:|\[!|\$\$)/u;
+// GLFM だけの、行の頭のブロックの記法 (説明の : と ~・>>>・::include・目次の [[_TOC_]] と [TOC]。目次は大文字小文字を問わない)。
+const glfmBlockStart = /^(?:[:~](?:[ \t]|$)|>>>|::include|\[\[_[Tt][Oo][Cc]_\]\]|\[[Tt][Oo][Cc]\])/u;
+
+// MD013 (長すぎる行) が報告した段落の行を、既にある空白の位置で折る修正 (作った MD013 の修正) を返す。折る所ごとに
+// 1 つの修正 (空白の並びを、改行と続きの行の頭に置き換える) にする。どれも書き換えるのは空白だけなので、コード・数式・
+// 守る記法の中身には触れない。
+// - 段落 (Comrak の Paragraph) の行だけを折る。見出し・表・コード・HTML のブロック・リンクの定義などは折らない
+// - 折らない空白: コードスパン・インラインの数式の中、インラインの HTML のタグの中と、開きタグから対の閉じタグまで
+//   (閉じない開きタグは段落の終わりまで)、リンクと画像の行き先と title の中、守る記法の中、\ の直後 (折ると硬い改行になる)、
+//   両側が全角の文字の所、折った後の行の頭がブロックの記法になる所
+// - 幅 (MD013 の line_length) の中で最後の折れる所を選ぶ。幅の中に無ければ、幅を越えた最初の折れる所で折る。残りにも繰り返す
+// - 続きの行の頭は、段落の 1 行目では、その行の頭 (入れ物の > とリストの印など) の > 以外を空白にしたもの (段落の中身の桁)。
+//   2 行目からは、その行の頭 (入れ物の > と字下げ) をそのまま使う (入れ物の > の無い怠惰な続きの行は、そのまま怠惰な行にする)
+// - インラインの HTML のある段落の修正には html の印を付ける (当てるときに HTML の描画も比べる)
+function lineWrapFixes(source, longLines, parse, flavor) {
+  const lines = linesOf(source);
+  const nodes = parse(parsedText(source, lines, flavor).text);
+  const offset = (position, inclusive) => sourceOffset(source, lines, position, inclusive);
+  const paragraphRows = new Map();
+  const forbidden = [...source.matchAll(flavor.atoms)].map((match) => [match.index, match.index + match[0].length]);
+  // 段落ごとの、インラインの HTML のタグ (文書の順)。
+  const inlineTags = new Map();
+  for (let index = 0; index < nodes.length; index++) {
+    const node = nodes[index];
+    const type = nodeType(node);
+    const position = node.data.sourcepos;
+    if (!position?.start.line || !position?.end.line) continue;
+    if (type === "Paragraph") {
+      const paragraph = { first: position.start.line, start: offset(position.start, false), end: offset(position.end, true), html: false };
+      for (let row = paragraph.first; row <= position.end.line; row++) paragraphRows.set(row, paragraph);
+    } else if (type === "Code" || (type === "Math" && !node.data.value.Math.display_math)) {
+      forbidden.push([offset(position.start, false), offset(position.end, true)]);
+    } else if (type === "HtmlInline") {
+      const span = [offset(position.start, false), offset(position.end, true)];
+      forbidden.push(span);
+      let paragraph = node.parent;
+      while (paragraph !== undefined && nodeType(nodes[paragraph]) !== "Paragraph") paragraph = nodes[paragraph].parent;
+      if (paragraph === undefined) continue;
+      if (!inlineTags.has(paragraph)) inlineTags.set(paragraph, []);
+      const [, slash, name] = /^<(\/?)([A-Za-z][A-Za-z0-9-]*)/u.exec(source.slice(...span)) || [];
+      inlineTags.get(paragraph).push({ span, name: name?.toLowerCase(), closing: Boolean(slash),
+        empty: !name || /\/>$/u.test(source.slice(...span)) || voidElements.has(name.toLowerCase()) });
+    } else if (type === "Link" || type === "Image") {
+      const children = childIndices(nodes, index);
+      const last = children.length ? nodes[children.at(-1)].data.sourcepos : null;
+      forbidden.push([last?.end.line ? offset(last.end, true) : offset(position.start, false), offset(position.end, true)]);
+    }
+  }
+  // 開きタグから対の閉じタグまでを守る (<kbd>a b</kbd> のように、空白が意味を持つ要素の中で折らない)。閉じない開きタグと、
+  // 外側の閉じタグで閉じられた内側の開きタグは、段落の終わりまで守る。
+  for (const [index, tags] of inlineTags) {
+    const paragraph = paragraphRows.get(nodes[index].data.sourcepos.start.line);
+    paragraph.html = true;
+    const open = [];
+    for (const tag of tags) {
+      if (tag.empty) continue;
+      if (!tag.closing) {
+        open.push(tag);
+        continue;
+      }
+      const at = open.findLastIndex((candidate) => candidate.name === tag.name);
+      if (at < 0) continue;
+      forbidden.push([open[at].span[0], tag.span[1]]);
+      for (const inner of open.splice(at).slice(1)) forbidden.push([inner.span[0], paragraph.end]);
+    }
+    for (const tag of open) forbidden.push([tag.span[0], paragraph.end]);
+  }
+  const spans = sortedSpans(forbidden);
+  const fixes = [];
+  const seen = new Set();
+  for (const result of longLines) {
+    const row = result.lineNumber;
+    const paragraph = paragraphRows.get(row);
+    const width = Array.isArray(result.errorRange) ? result.errorRange[0] - 1 : Number(/Expected: (\d+)/u.exec(result.errorDetail || "")?.[1]);
+    if (!paragraph || seen.has(row) || !(width > 0)) continue;
+    seen.add(row);
+    const line = lines[row - 1];
+    const contentStart = row === paragraph.first ? paragraph.start - line.start : /^[ \t>]*/u.exec(line.content)[0].length;
+    const prefix = line.content.slice(0, contentStart);
+    if (/\t/u.test(prefix)) continue;
+    const continuation = row === paragraph.first ? prefix.replace(/[^>]/gu, " ") : prefix;
+    const text = line.content;
+    const end = text.trimEnd().length;
+    // 折れる所 (空白の並び [from, to))。
+    const candidates = [];
+    for (const match of text.slice(0, end).matchAll(/[ \t]+/gu)) {
+      const from = match.index;
+      const to = from + match[0].length;
+      if (from <= contentStart || to >= end) continue;
+      if (text[from - 1] === "\\") continue;
+      if (wideAround(text, from, to)) continue;
+      if (overlapsSpans(spans, line.start + from, line.start + to)) continue;
+      const rest = text.slice(to);
+      if (blockStart.test(rest) || (flavor.descriptionProjection && glfmBlockStart.test(rest))) continue;
+      candidates.push([from, to]);
+    }
+    // 貪欲に折る。今の行の長さは、行の頭 (1 行目は元の行の頭、2 行目からは続きの行の頭) と中身の長さ。
+    // 1 行目は MD013 が報告したので必ず折る。残りは、MD013 と同じく最後の空白の後ろ (折れない語) を数えずに測り、
+    // 収まれば折らない (短い切れ端を作らない。strict の設定で残りが長すぎれば、次の回に MD013 が報告する)。
+    let segment = 0;
+    let prefixLength = 0;
+    for (let first = true; ; first = false) {
+      const length = (at) => prefixLength + at - segment;
+      if (!first && prefixLength + text.slice(segment).replace(/\S*$/u, "#").length <= width) break;
+      const usable = candidates.filter(([from]) => from > segment);
+      const within = usable.filter(([from]) => length(from) <= width);
+      const chosen = within.at(-1) ?? usable[0];
+      if (!chosen) break;
+      const [from, to] = chosen;
+      fixes.push({
+        ruleNames: ["MD013", "line-length"], lineNumber: row, wrap: true, html: paragraph.html,
+        fixInfo: { lineNumber: row, editColumn: from + 1, deleteCount: to - from, insertText: "\n" + continuation },
+      });
+      segment = to;
+      prefixLength = continuation.length;
+    }
+  }
+  // 下の行・右の列から並べる (まとめを半分に分けて当てても、残りの修正の位置がずれない)。
+  return fixes.sort(descendingFix);
+}
+
 // 空行の後に、リストの印か字下げした行が続く所 (入れ物の > の後を含む)。loose のリストの無い文書を、解析せずに見分ける
 // (広めに当たっても解析が 1 回増えるだけ)。
 const looseListHint = new RegExp(String.raw`^[ \t]*(?:>[ \t]?)*[ \t]*(?:\r\n?|\n)(?:[ \t]*>[ \t]?)*` +
@@ -1400,6 +1561,9 @@ export async function formatMarkdown(source, options = {}) {
     if (!currentKeys.has(key)) currentKeys.set(key, structureKey(currentTree, rules));
     return currentKeys.get(key);
   };
+  // 描画の比べ (折り返しの確かめ) に使う、正規化した HTML。今の文書の分は覚えておく。
+  const renderedOf = (text) => normalizedHtml(render(parsedText(text, linesOf(text), flavor).text), flavor);
+  let renderedCurrent;
   const visited = new Set([start]);
   let current = start;
   let attempted = 0;
@@ -1407,7 +1571,9 @@ export async function formatMarkdown(source, options = {}) {
     let fixes = await lint(current, dependencies, settings);
     // 選ばれる修正が無く、説明リストの印も無い文書は、解析せずにそのまま返す (印があれば、引用に見立てた lint が修正を足しうる)。
     // 印の判定は広めにし、疑わしいときは今までどおり解析する。
-    if (pass === 0 && !exhaustive && !fixes.some((fix) => selected(fix)) && !flavor.descriptionHint?.test(current)) {
+    const { longLines } = fixes;
+    const wrapping = longLines.length > 0 && selected({ ruleNames: ["MD013"] });
+    if (pass === 0 && !exhaustive && !fixes.some((fix) => selected(fix)) && !wrapping && !flavor.descriptionHint?.test(current)) {
       return finish(current);
     }
     const projected = projection(current, parse, flavor);
@@ -1443,13 +1609,23 @@ export async function formatMarkdown(source, options = {}) {
       if (candidate === current) return;
       const snapshot = snapshotOf(candidate);
       const rules = relaxations(batch);
+      let html;
+      const sameRendering = () => {
+        html = renderedOf(candidate);
+        if (renderedCurrent?.text !== current) renderedCurrent = { text: current, html: renderedOf(current) };
+        return html === renderedCurrent.html;
+      };
+      // インラインの HTML のある段落の折り返しは、Comrak の HTML の描画も比べる (空白がそのまま描かれる要素の中で
+      // 折ったものを、念のため見つける。対のタグの間では折らないので、ふつうは同じ)。
       if (snapshot.loose === originalOf().loose &&
-          (mode === "creating" || structureKey(snapshot.tree, rules) === currentKey(rules))) {
+          (mode === "creating" || structureKey(snapshot.tree, rules) === currentKey(rules)) &&
+          (!batch.some((group) => group.some((fix) => fix.html)) || sameRendering())) {
         // 範囲内の改行増減に追従し、次の解析で元の選択範囲外を整形しない。
         if (selection) selection.end += candidate.length - current.length;
         current = candidate;
         currentTree = snapshot.tree;
         currentKeys = new Map();
+        if (html !== undefined) renderedCurrent = { text: candidate, html };
         return;
       }
       if (batch.length === 1) return;
@@ -1457,79 +1633,90 @@ export async function formatMarkdown(source, options = {}) {
       accept(batch.slice(0, middle), mode);
       accept(batch.slice(middle), mode);
     };
-    let changed = false;
-    let pending = groups;
-    while (pending.length && !changed) {
-      const batch = [];
-      const deferred = [];
-      // 選んだ修正の範囲を行ごとに持つ (重なりは同じ行の範囲どうしでしか起きない)。
-      const selectedRanges = new Map();
-      // 長さの変わる修正を含むリストのまとめが書き換える行。まとめは上の行にも及ぶので、
-      // 同じ行のほかの修正と一緒に当てると、半分に分けて確かめたときに後から当てる側の列がずれる。
-      const shiftedLines = new Set();
-      const selectedLines = new Set();
-      for (const group of pending) {
-        const ranges = group.map((fix) => {
-          const [line, column] = fixPosition(fix);
-          return { line, column, end: column + Math.max(0, fix.fixInfo.deleteCount || 0), deleted: fix.fixInfo.deleteCount === -1 };
-        });
-        const shifting = group.length > 1 && group.some((fix) => fix.fixInfo.deleteCount === -1 ||
-          (fix.fixInfo.insertText || "").length !== Math.max(0, fix.fixInfo.deleteCount || 0));
-        // 同じ解析結果に基づく重複修正は同時に当てない。ほかが当たれば次の解析で再評価し、
-        // 何も当たらなかったときは、位置がずれていないのでこのまま残りを試す。
-        if (ranges.some((candidate) => shiftedLines.has(candidate.line) || (shifting && selectedLines.has(candidate.line)) ||
-            (selectedRanges.get(candidate.line) || []).some((range) =>
-              candidate.deleted || range.deleted || (candidate.end > range.column && candidate.column < range.end) ||
-              candidate.column === range.column))) {
-          deferred.push(group);
-          continue;
-        }
-        attempted += group.length;
-        if (attempted > MAX_FIXES) throw new Error("修正が多すぎるため整形を中止しました。");
-        for (const range of ranges) {
-          if (!selectedRanges.has(range.line)) selectedRanges.set(range.line, []);
-          selectedRanges.get(range.line).push(range);
-          selectedLines.add(range.line);
-          if (shifting) shiftedLines.add(range.line);
-        }
-        batch.push(group);
-      }
-      const before = current;
-      // コードや数式の中身と GitLab の記法を変える修正は、ほとんど却下される。まとめに混ぜると半分に分ける検証が
-      // 増えるので、前後のまとめと順番を保ったまま 1 つずつ確かめる (結果は同じで、手間だけが減る)。
-      // 確かめ方の違う修正も、順番を保ったまま別のまとめにする。
-      let run = [];
-      let runMode;
-      const flush = () => {
-        accept(run, runMode);
-        run = [];
-      };
-      const protectedList = batch.filter((group) => group.some((fix) => touchesProtected(fix, projected)));
-      const protectedGroups = new Set(protectedList);
-      // 緩い検査で必ず落ちると分かる保護範囲のまとめは、全文を解析して確かめない (近道 G)。判定は今の文書に対するものなので、
-      // 先の修正が当たって今の文書が変わったら、残りのまとめを判定し直す。
-      let doomed = new Set();
-      let judged;
-      let protectedIndex = 0;
-      for (const group of batch) {
-        const mode = fixMode(group[0]);
-        if (protectedGroups.has(group)) {
-          flush();
-          if (!exhaustive && judged !== current) {
-            doomed = doomedProtectedGroups(protectedList.slice(protectedIndex), current, originalOf().atoms, parse, parseBlock, flavor);
-            judged = current;
+    // まとめを当てて、文書が変わったか。重なる修正は、ほかが当たらなかったときに続けて試す。
+    const applyGroups = (groups) => {
+      let changed = false;
+      let pending = groups;
+      while (pending.length && !changed) {
+        const batch = [];
+        const deferred = [];
+        // 選んだ修正の範囲を行ごとに持つ (重なりは同じ行の範囲どうしでしか起きない)。
+        const selectedRanges = new Map();
+        // 長さの変わる修正を含むリストのまとめが書き換える行。まとめは上の行にも及ぶので、
+        // 同じ行のほかの修正と一緒に当てると、半分に分けて確かめたときに後から当てる側の列がずれる。
+        const shiftedLines = new Set();
+        const selectedLines = new Set();
+        for (const group of pending) {
+          const ranges = group.map((fix) => {
+            const [line, column] = fixPosition(fix);
+            return { line, column, end: column + Math.max(0, fix.fixInfo.deleteCount || 0), deleted: fix.fixInfo.deleteCount === -1 };
+          });
+          const shifting = group.length > 1 && group.some((fix) => fix.fixInfo.deleteCount === -1 ||
+            (fix.fixInfo.insertText || "").length !== Math.max(0, fix.fixInfo.deleteCount || 0));
+          // 同じ解析結果に基づく重複修正は同時に当てない。ほかが当たれば次の解析で再評価し、
+          // 何も当たらなかったときは、位置がずれていないのでこのまま残りを試す。
+          if (ranges.some((candidate) => shiftedLines.has(candidate.line) || (shifting && selectedLines.has(candidate.line)) ||
+              (selectedRanges.get(candidate.line) || []).some((range) =>
+                candidate.deleted || range.deleted || (candidate.end > range.column && candidate.column < range.end) ||
+                candidate.column === range.column))) {
+            deferred.push(group);
+            continue;
           }
-          protectedIndex++;
-          if (!doomed.has(group)) accept([group], mode);
-        } else {
-          if (run.length && mode !== runMode) flush();
-          runMode = mode;
-          run.push(group);
+          attempted += group.length;
+          if (attempted > MAX_FIXES) throw new Error("修正が多すぎるため整形を中止しました。");
+          for (const range of ranges) {
+            if (!selectedRanges.has(range.line)) selectedRanges.set(range.line, []);
+            selectedRanges.get(range.line).push(range);
+            selectedLines.add(range.line);
+            if (shifting) shiftedLines.add(range.line);
+          }
+          batch.push(group);
         }
+        const before = current;
+        // コードや数式の中身と GitLab の記法を変える修正は、ほとんど却下される。まとめに混ぜると半分に分ける検証が
+        // 増えるので、前後のまとめと順番を保ったまま 1 つずつ確かめる (結果は同じで、手間だけが減る)。
+        // 確かめ方の違う修正も、順番を保ったまま別のまとめにする。
+        let run = [];
+        let runMode;
+        const flush = () => {
+          accept(run, runMode);
+          run = [];
+        };
+        const protectedList = batch.filter((group) => group.some((fix) => touchesProtected(fix, projected)));
+        const protectedGroups = new Set(protectedList);
+        // 緩い検査で必ず落ちると分かる保護範囲のまとめは、全文を解析して確かめない (近道 G)。判定は今の文書に対するものなので、
+        // 先の修正が当たって今の文書が変わったら、残りのまとめを判定し直す。
+        let doomed = new Set();
+        let judged;
+        let protectedIndex = 0;
+        for (const group of batch) {
+          const mode = fixMode(group[0]);
+          if (protectedGroups.has(group)) {
+            flush();
+            if (!exhaustive && judged !== current) {
+              doomed = doomedProtectedGroups(protectedList.slice(protectedIndex), current, originalOf().atoms, parse, parseBlock, flavor);
+              judged = current;
+            }
+            protectedIndex++;
+            if (!doomed.has(group)) accept([group], mode);
+          } else {
+            if (run.length && mode !== runMode) flush();
+            runMode = mode;
+            run.push(group);
+          }
+        }
+        flush();
+        changed = current !== before;
+        pending = deferred;
       }
-      flush();
-      changed = current !== before;
-      pending = deferred;
+      return changed;
+    };
+    let changed = applyGroups(groups);
+    // 長い行は、ほかの修正が当たらなかった回にだけ折る (ほかの修正で行が変わる前に折ると、折る所の計算がずれる)。
+    if (!changed && wrapping) {
+      changed = applyGroups(lineWrapFixes(current, longLines, parse, flavor)
+        .filter((fix) => !projected.protectedRows.has(fixPosition(fix)[0]) && inRange(projected.lines, fix, selection))
+        .map((fix) => [fix]));
     }
     if (!changed) {
       if (snapshotOf(current).loose !== originalOf().loose) {

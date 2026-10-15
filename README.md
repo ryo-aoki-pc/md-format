@@ -10,6 +10,7 @@ GFM と GLFM の Markdown を、描画を変えずに整形する `mdfmt` コマ
 - markdownlint（markdownlint-cli2）の自動修正のうち、整形の前後で描画が変わらないものだけを当てる。
   修正を当てた文書を Comrak（GitLab と同じ系統の解析器）で読み直し、構造・リテラル・GitLab の記法が変わる修正は当てない
 - loose のリスト（項目の間に空行のあるリスト）を詰めて tight にする。どの修正も、詰まったリストを loose にしない
+- 有効にすると、長すぎる行を既にある空白の位置で折る（分類 `line_length`。幅は markdownlint の MD013 の設定）
 - 埋め込んだ HTML のブロック（`<table>`・`<details>` など）を、タグの入れ子に合わせて字下げする
 - 直す対象を、分類名かルール名（`MD026`・`no-trailing-punctuation`）で選べる
 - 標準入力・ファイル・フォルダを扱える。`--check` で、整形の要るファイルを見つけられる
@@ -61,6 +62,10 @@ mdfmt --help
 
 - `tight_lists`（既定で有効）: loose のリストを詰める
 - `html`（既定で有効）: HTML のブロックを字下げする
+
+既定で無効の分類のうち、`line_length`（MD013）は長すぎる行を空白の位置で折る。幅は markdownlint の MD013 の `line_length`（既定 80）。
+日本語どうしの間の空白では折らない（ブラウザによって空白が見えなくなるため）。有効にするには `--enable-fixes line_length` か、
+`.md-format.json` の `"fixes": { "line_length": true }`。
 
 診断（markdownlint の警告）ごと止めるときは、markdownlint の設定でルールを無効にする。
 
