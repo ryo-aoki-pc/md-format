@@ -13,7 +13,9 @@ markdownlint の各ルールで Markdown をどう変えるかの一覧。loose 
   方言ごとに守る記法（GLFM の `#123`・`~label`・`[[_TOC_]]`・`::include`、GFM の `GH-123`・`@org/team` など）を変える修正は当てない。
   ただし、見出し・強調・リンクを作る修正（`heading_conversion`・`emphasis_spaces`・`reversed_links`）は、有効にすると構造を変えて当てる（リストの tight は変えない）
 - 引数の知らない名前や、同じ層で同じルール名や別名を有効と無効の両方に書いたときは、整形せずにエラーにする（文書は変わらない）。
-  `.md-format.json` の `fixes` の知らない名前は、警告を出して無視する
+  `.md-format.json` の `fixes` の知らない名前は、警告を出して無視する。
+  カスタムルールの別名どうしの衝突は、そのルールの診断が出た文書でだけエラーになる（markdownlint-cli2 がカスタムルールの名前の一覧を返さず、
+  診断の名前で別名を結びつけるため）
 - 例は markdownlint の既定の設定（全ルール有効）で整形した結果。`flavor=gfm` を付けた例は GFM、ほかは GLFM。`␣` は空白、`⇥` はタブを表す（見えない文字を見えるようにするため）。
   [test/reference.test.mjs](../../test/reference.test.mjs) が、この文書の例をすべて整形し直して確かめる
 

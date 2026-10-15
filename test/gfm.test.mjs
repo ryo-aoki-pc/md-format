@@ -244,6 +244,18 @@ test("GFM の消毒で消えるタグの端に描画される空白を足さな�
   }
   const input = "<div><header><b>a</b></header><i>b</i></div>\n";
   assert.notEqual(await formatMarkdown(input, { ...options, flavor: "glfm" }), input);
+  // 表の外の表の部品と、空要素の閉じタグ (HTML の解析で捨てられ、GitHub は中の文字と後ろの空白を出す)。方言によらない。
+  for (const [open, close] of [["td", "td"], ["tr", "tr"], ["th", "th"], ["thead", "thead"], ["tbody", "tbody"], ["tfoot", "tfoot"], ["hr", "hr"]]) {
+    const element = `<div><${open}><b>a</b></${close}><i>b</i></div>\n`;
+    const beautifyHtml = (text) => text.replace(`</${close}><i>`, `</${close}>\n<i>`);
+    for (const flavor of ["gfm", "glfm"]) {
+      assert.equal(await formatMarkdown(element, { ...options, flavor, beautifyHtml }), element, `${open} (${flavor})`);
+    }
+  }
+  // 本物の表の中の部品の間は、今までどおり字下げできる。
+  const table = "<table><tr><td>a</td><td>b</td></tr></table>\n";
+  assert.equal(await formatMarkdown(table, options),
+    "<table>\n  <tr>\n    <td>a</td>\n    <td>b</td>\n  </tr>\n</table>\n");
 });
 
 test("GFM の tagfilter で文字になるタグの前後も保つ", async (t) => {

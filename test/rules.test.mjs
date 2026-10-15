@@ -148,4 +148,6 @@ test("custom rule aliases that are enabled and disabled at once are rejected", a
   assert.equal(await formatMarkdown("old\n", options), "new\n", "the custom rule is applied by default");
   assert.equal(await formatMarkdown("old\n", { ...options, fixes: { "test-alias-other": false } }), "old\n");
   await assert.rejects(formatMarkdown("old\n", { ...options, fixes: { "test-alias-rule": true, "test-alias-other": false } }), /両方/);
+  // markdownlint-cli2 は登録名の一覧を返さないので、カスタムルールの別名どうしの衝突は、そのルールの診断が出た文書でだけ分かる。
+  assert.equal(await formatMarkdown("fine\n", { ...options, fixes: { "test-alias-rule": true, "test-alias-other": false } }), "fine\n");
 });

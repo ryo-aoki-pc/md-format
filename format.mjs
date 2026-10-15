@@ -1016,6 +1016,11 @@ const htmlTokens = new RegExp([
   String.raw`<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>\x60]+))?)*\s*\/?>`,
 ].join("|"), "gu");
 
+// 表の部品。HTML の解析は、table の外のこれらのタグを捨てる。
+const tableParts = new Set(["caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr"]);
+// 空要素。HTML の解析は、これらの閉じタグを捨てる (</br> だけは <br> と読む)。
+const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
+
 // タグの引用符の外の空白の並びを 1 つにし、= の前後と閉じ (> と />) の前の空白を消す。
 function normalizedTag(token) {
   return token.replace(/("[^"]*"|'[^']*')|(\s*=\s*)|(\s+(?=\/?>$))|\s+/gu,
@@ -1025,10 +1030,14 @@ function normalizedTag(token) {
 // 描画が同じ HTML を同じ値にする。疑わしい差は残す (整形を拒む側に倒す)。
 // 1. 空白がそのまま出る要素 (whitespaceElements と、style に white-space を書いた要素) の中の文字は原文のまま
 // 2. それ以外の文字は、ASCII の空白の並びを空白 1 つに畳む。ブロック要素のタグ・<br>・文書の端に接する空白は消す
+//    ただし、HTML の解析で捨てられるタグ (表の外の td・tr などの表の部品と、</hr> のような空要素の閉じタグ) は、
+//    ブロック要素でも空白の境にしない (タグが消えて、前後の文字と空白がそのまま並ぶ)
 // 3. インライン要素どうしの間の空白は有無を残す (<b>a</b><i>b</i> と <b>a</b> <i>b</i> は別の値)。コメントは原文のまま
 function normalizedHtml(html, flavor = flavors.glfm) {
   const { blockElements, whitespaceElements } = flavor;
   const items = [];
+  // 開いている table の数。表の部品のタグは、table の中でだけ空白の境にする。
+  let tables = 0;
   // 空白がそのまま出る要素の、開いているものの名前と、同じ名前の入れ子の深さ。
   const exact = [];
   let last = 0;
@@ -1045,7 +1054,10 @@ function normalizedHtml(html, flavor = flavors.glfm) {
     }
     const [, slash, name] = /^<(\/?)([A-Za-z][A-Za-z0-9-]*)/u.exec(token);
     const lower = name.toLowerCase();
-    items.push(["tag", normalizedTag(token), blockElements.has(lower)]);
+    // </br> は <br> と読まれるので、境のままにする。
+    const dropped = (tableParts.has(lower) && !tables) || (slash && voidElements.has(lower) && lower !== "br");
+    items.push(["tag", normalizedTag(token), blockElements.has(lower) && !dropped]);
+    if (lower === "table") tables = Math.max(0, tables + (slash ? -1 : 1));
     const open = exact.at(-1);
     if (slash) {
       if (open?.name === lower && --open.depth === 0) exact.pop();
