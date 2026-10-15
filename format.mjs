@@ -5,14 +5,7 @@ import path from "node:path";
 import * as nodeModule from "node:module";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-
-// 古い導入先で本体だけをコピーして起動した場合は、指定された runtime の方言表を使う。
-const flavorModule = new URL("./flavors.mjs", import.meta.url);
-const runtimeArgument = process.argv.indexOf("--runtime-dir");
-const flavorModuleUrl = !fs.existsSync(flavorModule) && runtimeArgument !== -1 && process.argv[runtimeArgument + 1]
-  ? pathToFileURL(path.resolve(process.argv[runtimeArgument + 1], "flavors.mjs"))
-  : flavorModule;
-const { flavors, getFlavor } = await import(flavorModuleUrl);
+import { flavors, getFlavor } from "./flavors.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const runtimes = new Map();

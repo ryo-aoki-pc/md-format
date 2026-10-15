@@ -64,6 +64,32 @@ mdfmt --help
 
 診断（markdownlint の警告）ごと止めるときは、markdownlint の設定でルールを無効にする。
 
+## 方言の選び方
+
+既定は GLFM（GitLab Flavored Markdown）。GitHub 向けの文書は `--flavor gfm` で、GFM（GitHub Flavored Markdown）として整形する。
+
+```sh
+mdfmt --flavor gfm --write README.md
+```
+
+プロジェクトで揃えるときは、`.md-format.json` を置く。キーは `flavor` と `fixes` だけで、どちらも省ける。
+
+```json
+{
+  "flavor": "gfm",
+  "fixes": { "MD026": false }
+}
+```
+
+- 文書のフォルダから上へたどり、最初に見つけた `.md-format.json` だけを読む（フォルダを渡したときも、文書ごとに探す）
+- 標準入力では `--filename` のフォルダ、無ければ今のフォルダから探す
+- `--flavor` は `.md-format.json` より強い。どちらも無ければ GLFM
+- `fixes` は分類名かルール名を真偽値で選ぶ（`--enable-fixes`・`--disable-fixes` と同じ）。引数のルール名 → 引数の分類 → 設定のルール名 → 設定の分類 → 既定の順に決める
+- 壊れた JSON・知らないキー・不正な値は、設定ファイルのパスを添えた誤り（終了コード 2）になる
+- `fixes` の知らない名前は、警告（`mdfmt: 警告: …`）を 1 回の実行に 1 行だけ出して無視する。カスタムルールの名前は、その文書の診断に出た名前と照合するので、診断の出なかった文書でも警告になる
+- どちらの方言も、段落の中の改行は、リポジトリのファイルと同じく空白として比べる（GitHub のコメントでは改行が強制改行になる）
+- 方言ごとに守る記法と例は、[GFM と GLFM の違い](docs/reference/rules.md#gfm-と-glfm-の違い) にある
+
 ## Neovim から使う
 
 LazyVimStarter の保存時と `<leader>cf` の整形は、導入した mdfmt（導入先の `format.mjs`）を呼ぶ。Markdown のバッファを開くと、依存を読み込んだ node を 1 つ先に起動しておき（予備のプロセス、`spare.mjs`）、保存の待ち時間を縮める。設定は LazyVimStarter の `lua/plugins/lang-markdown.lua` にある。
@@ -207,39 +233,6 @@ GitLab の記法は変えない。`#123` は見出しにせず、説明リスト
 
 </details>
 ```
-
-## 方言の選び方
-
-既定は GLFM (GitLab Flavored Markdown)。GitHub 向けの文書は `--flavor gfm`、GitLab 向けは `--flavor glfm` で指定する。
-
-```sh
-mdfmt --flavor gfm README.md
-mdfmt --flavor glfm --write README.md
-```
-
-プロジェクトで揃えるときは、`.md-format.json` を置く。キーは `flavor` と `fixes` だけで、どちらも省略できる。
-
-```json
-{
-  "flavor": "gfm",
-  "fixes": {
-    "blank_lines": true,
-    "MD026": false
-  }
-}
-```
-
-文書のあるフォルダから上へたどり、最初に見つかった `.md-format.json` だけを読む。標準入力では `--filename` のフォルダから探し、指定が無ければ作業フォルダの `stdin.md` として探す。フォルダをまとめて整形するときも、文書ごとに探す。`--flavor` の指定があれば、その方言を優先する。指定も設定も無ければ GLFM になる。
-
-`fixes` は分類名かルール名を真偽値で選び、`--enable-fixes`・`--disable-fixes` と同じ意味を持つ。直す対象は、引数のルール名 → 引数の分類 → 設定ファイルのルール名 → 設定ファイルの分類 → 既定の順に決める。たとえば、設定ファイルの `MD026: false` は `--enable-fixes heading_punctuation` で上書きできる。
-
-壊れた JSON・知らないキー・不正な値は、設定ファイルのパスを添えた誤りになる。ただし、`fixes` の知らない名前は標準エラーに警告を出して無視する。
-
-カスタムルール名は、その文書の整形中に出た診断の名前・別名で照合するため、登録済みでも一度も診断が出ない名前の指定は「この文書の診断にありません。この指定は無視します。」と警告する。診断に出たカスタムルールは、名前でも別名でも指定どおりに選ぶ。
-
-引数の知らない名前と、同じ層で同じルール名や別名を有効・無効の両方に指定することは誤りになる。整形の診断ルールは、これまでどおり markdownlint の設定で選ぶ。
-
-両方の方言で、リポジトリのファイルと同じく、段落内の普通の改行は空白として比べる。GitHub のコメントでは改行が強制改行として描画される場合がある。[GFM と GLFM の違い](docs/reference/rules.md#gfm-と-glfm-の違い) に、守る記法と整形の例を載せている。
 
 ## テスト
 
