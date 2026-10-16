@@ -52,6 +52,8 @@ export const defaultDisabledCategories = Object.freeze([
 ]);
 // HTML のブロックの整形 (markdownlint の修正ではない分類)。既定で有効。
 export const htmlCategory = "html";
+// HTML の表の書式のあるセルを Markdown にする。既定で有効。
+export const htmlCellsCategory = "html_cells";
 // loose のリストを詰めて tight にする (markdownlint の修正ではない分類)。既定で有効。
 export const tightListsCategory = "tight_lists";
 // js-beautify の設定。字下げは 2 つで、折り返さず、空行を足さない (HTML のブロックは空行で終わるため)。
@@ -118,10 +120,12 @@ async function runtime(directory) {
       const require = createRequire(path.join(resolved, "package.json"));
       const { main } = await import(pathToFileURL(require.resolve("markdownlint-cli2")));
       const { parseMarkdown, markdownToHTML } = require("comrak");
-      if (typeof main !== "function" || typeof parseMarkdown !== "function" || typeof markdownToHTML !== "function") {
+      const { decodeHTML, decodeHTMLAttribute, decodeHTMLStrict } = await import(pathToFileURL(require.resolve("entities")));
+      if (typeof main !== "function" || typeof parseMarkdown !== "function" || typeof markdownToHTML !== "function" ||
+          typeof decodeHTML !== "function" || typeof decodeHTMLAttribute !== "function" || typeof decodeHTMLStrict !== "function") {
         throw new Error("整形ツールの依存パッケージを読み込めません。");
       }
-      return { main, parseMarkdown, markdownToHTML };
+      return { main, parseMarkdown, markdownToHTML, decodeHTML, decodeHTMLAttribute, decodeHTMLStrict };
     })().catch((error) => {
       runtimes.delete(resolved);
       throw error;
@@ -501,13 +505,13 @@ function editDistance(a, b) {
 // markdownlint と同じく、名前の大文字小文字は区別しない。
 function fixTarget(name) {
   const lower = name.toLowerCase();
-  if (Object.hasOwn(fixCategories, lower) || lower === htmlCategory || lower === tightListsCategory) return `category:${lower}`;
+  if (Object.hasOwn(fixCategories, lower) || lower === htmlCategory || lower === htmlCellsCategory || lower === tightListsCategory) return `category:${lower}`;
   const id = name.toUpperCase();
   if (Object.hasOwn(ruleAliases, id)) return `rule:${id}`;
   if (ruleIdsByAlias.has(lower)) return `rule:${ruleIdsByAlias.get(lower)}`;
   // 分類名やルール名の綴り違いを、カスタムルールの名前として黙って受け取らない。
   // 分類名の形 (英字と _ だけ) と MD の番号の形は、カスタムルールの名前にしない。
-  const known = [...Object.keys(fixCategories), htmlCategory, tightListsCategory, ...ruleIdsByAlias.keys()];
+  const known = [...Object.keys(fixCategories), htmlCategory, htmlCellsCategory, tightListsCategory, ...ruleIdsByAlias.keys()];
   if (/^MD\d+$/iu.test(name) || /^[a-z_]+$/iu.test(name) || known.some((candidate) => editDistance(lower, candidate) <= 2)) {
     throw new Error(`整形する対象 ${name} は、分類名にもルール名にもありません。`);
   }
@@ -550,7 +554,7 @@ function fixSelector(fixes, projectFixes, onWarning, projectConfigPath) {
   }
   const layers = [argumentLayer, projectLayer];
   // 引数の層 > ファイルの層 > 既定。同じ層では、ルール名を分類名より先に見る。HTML のブロックの整形と、loose のリストを
-  // 詰めることは markdownlint の修正ではないので、select.html と select.tightLists で別に返す。
+  // 詰めることは markdownlint の修正ではないので、select.html・select.htmlCells・select.tightLists で別に返す。
   const select = (fix) => {
     const id = ruleId(fix);
     if (Object.hasOwn(ruleAliases, id)) {
@@ -597,6 +601,7 @@ function fixSelector(fixes, projectFixes, onWarning, projectConfigPath) {
   };
   const categoryChoice = (category) => layers.map((chosen) => chosen.get("category:" + category)).find((value) => value !== undefined);
   select.html = categoryChoice(htmlCategory) ?? true;
+  select.htmlCells = categoryChoice(htmlCellsCategory) ?? true;
   select.tightLists = categoryChoice(tightListsCategory) ?? true;
   return select;
 }
@@ -1035,9 +1040,54 @@ const tableParts = new Set(["caption", "col", "colgroup", "tbody", "td", "tfoot"
 const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
 
 // タグの引用符の外の空白の並びを 1 つにし、= の前後と閉じ (> と />) の前の空白を消す。
-function normalizedTag(token) {
+// semantic のときだけ、描画で同じになる属性の並び・引用符・実体参照もそろえる。
+function normalizedTag(token, semantic = null, foreign = false) {
+  if (semantic) {
+    const tag = semanticHtmlTag(token, semantic);
+    return JSON.stringify([tag.closing, tag.name, tag.attributes, tag.selfClosing && (foreign || !voidElements.has(tag.name))]);
+  }
   return token.replace(/("[^"]*"|'[^']*')|(\s*=\s*)|(\s+(?=\/?>$))|\s+/gu,
     (match, quoted, equals, closing) => quoted ?? (equals !== undefined ? "=" : closing !== undefined ? "" : " "));
+}
+
+// 同じ名前の属性は最初のものだけを使う。引用符の無い値の末尾の / は値の一部になる。
+function semanticHtmlTag(token, { decodeHTMLAttribute }) {
+  const match = /^<(\/?)([A-Za-z][A-Za-z0-9-]*)/u.exec(token);
+  const attributes = new Map();
+  const pattern = /\s+([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>\x60]+)))?/uy;
+  let offset = match[0].length;
+  while (offset < token.length) {
+    pattern.lastIndex = offset;
+    const attribute = pattern.exec(token);
+    if (!attribute) break;
+    const name = attribute[1].toLowerCase();
+    if (!attributes.has(name)) {
+      let value = decodeHTMLAttribute(attribute[2] ?? attribute[3] ?? attribute[4] ?? "");
+      if (name === "href" || name === "src") value = semanticHtmlUrl(value);
+      attributes.set(name, value);
+    }
+    offset = pattern.lastIndex;
+  }
+  return { name: match[2].toLowerCase(), closing: Boolean(match[1]),
+    attributes: [...attributes].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
+    selfClosing: /^\s*\/>$/u.test(token.slice(offset)) };
+}
+
+// 壊れた % があっても、比べる処理を止めずに原文を使う。
+function semanticHtmlUrl(value) {
+  try { return decodeURI(value); } catch { return value; }
+}
+
+// 裸の URL・www.・メールをリンクにする差だけを消す。題などの付いたリンクや、中に要素のあるリンクは残す。
+function semanticHtmlAutolink(pieces, index, semantic) {
+  const opening = semanticHtmlTag(pieces[index].token, semantic);
+  if (opening.closing || opening.name !== "a" || opening.attributes.length !== 1 || opening.attributes[0][0] !== "href") return null;
+  const text = pieces[index + 1];
+  const closing = pieces[index + 2];
+  if (!text || text.token !== undefined || text.raw || !closing?.token || !/^<\/a\s*>$/iu.test(closing.token)) return null;
+  const value = semantic.decodeHTML(text.text);
+  const target = opening.attributes[0][1];
+  return target === value || target === "http://" + value || target === "mailto:" + value ? value : null;
 }
 
 // 生の文字として読む要素の中の <table> は、表の深さに数えない。
@@ -1137,14 +1187,14 @@ function htmlWhitespaceElement(name, token, flavor) {
 //    中のタグも要素になる。生の文字の要素があれば、中もタグとして読む値も作り、両方を比べる (どちらかで違えば別の値)
 // 6. 空要素は style に white-space を書いても中が無いので、空白をそのまま出す要素に数えない (svg・math の中を除く)。
 //    空要素でない要素は /> でも開く (HTML の要素の / は無視される。svg・math の中で閉じるものを開くと数えても、厳しくなるだけ)
-function normalizedHtml(html, flavor = flavors.glfm, tables = 0, raw = null) {
-  const text = normalizedHtmlValue(html, flavor, tables, raw, false);
+function normalizedHtml(html, flavor = flavors.glfm, tables = 0, raw = null, semantic = null) {
+  const text = normalizedHtmlValue(html, flavor, tables, raw, false, semantic);
   if (raw === null && !rawTextHint.test(html)) return text;
-  return JSON.stringify([text, normalizedHtmlValue(html, flavor, tables, raw, true)]);
+  return JSON.stringify([text, normalizedHtmlValue(html, flavor, tables, raw, true, semantic)]);
 }
 
 // 文字とタグの正規化は、どちらの読み方でも同じ手順で行う。
-function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw) {
+function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw, semantic = null) {
   const { blockElements } = flavor;
   const items = [];
   // tables は、前の断片から開いている table の数。表の部品は、table の中でだけ空白の境にする。
@@ -1154,12 +1204,21 @@ function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw) {
   // 閉じタグは一番内側と同じ名前のときだけ外す (<math></svg> は math を閉じない)。
   const foreign = [];
   const pushText = (text) => {
-    if (text) items.push(exact.length ? ["raw", text] : ["text", text.replace(/[ \t\n\f\r]+/gu, " ")]);
+    if (!text) return;
+    const item = exact.length ? ["raw", text] : ["text", text.replace(/[ \t\n\f\r]+/gu, " ")];
+    // 自己リンクを外した前後の文字をつなぎ、元から 1 つの文字の片だったものと同じ値にする。
+    if (semantic && items.at(-1)?.[0] === item[0]) {
+      items.at(-1)[1] += item[1];
+      if (item[0] === "text") items.at(-1)[1] = items.at(-1)[1].replace(/ +/gu, " ");
+    } else items.push(item);
   };
-  for (const { token, text, raw: rawText } of htmlPieces(html, raw, tagsInRaw).pieces) {
+  const pieces = htmlPieces(html, raw, tagsInRaw).pieces;
+  for (let index = 0; index < pieces.length; index++) {
+    const { token, text, raw: rawText } = pieces[index];
     if (token === undefined) {
-      if (!tagsInRaw && rawTextWhitespace.has(rawText)) items.push(["raw", text]);
-      else pushText(text);
+      const value = semantic && !rawText ? semantic.decodeHTML(text) : text;
+      if (!tagsInRaw && rawTextWhitespace.has(rawText)) items.push(["raw", value]);
+      else pushText(value);
       continue;
     }
     if (token.startsWith("<!") || token.startsWith("<?")) {
@@ -1170,7 +1229,15 @@ function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw) {
     const lower = name.toLowerCase();
     // </br> は <br> と読まれるので、境のままにする。
     const dropped = (tableParts.has(lower) && !tables) || (slash && voidElements.has(lower) && lower !== "br");
-    items.push(["tag", normalizedTag(token), blockElements.has(lower) && !dropped]);
+    if (semantic && !rawText && !foreign.length && !exact.length && lower === "a" && !slash) {
+      const autolink = semanticHtmlAutolink(pieces, index, semantic);
+      if (autolink !== null) {
+        pushText(autolink);
+        index += 2;
+        continue;
+      }
+    }
+    items.push(["tag", normalizedTag(token, semantic, foreign.length > 0 || lower === "svg" || lower === "math"), blockElements.has(lower) && !dropped]);
     if (lower === "table" && !rawText) tables = Math.max(0, tables + (slash ? -1 : 1));
     if (lower === "svg" || lower === "math") {
       if (!slash) foreign.push(lower);
@@ -1345,9 +1412,8 @@ function htmlGroupOutput(blocks, beautify, flavor) {
 // 対象にできる種類 6・7 のブロックを集め、同じ親の子を文書の順にたどって開きと閉じを組にする。
 // 対象外の種類 6・7 も数えるが、そのまとまりは変えない。ほかのノードの中のタグは数えない。
 // 断片をまたいだ要素の暗黙の閉じと、親の終わりまで閉じない最初の断片は外す。
-function htmlBlockEdits(source, lines, nodes, selection, beautify, flavor) {
+function htmlBlockGroups(source, lines, nodes, selection, flavor) {
   const protectedRows = titledAlertRows(nodes, flavor);
-  const ending = preferredEnding(source);
   const blocks = new Map();
   for (const [index, node] of nodes.entries()) {
     if (nodeType(node) !== "HtmlBlock") continue;
@@ -1372,7 +1438,7 @@ function htmlBlockEdits(source, lines, nodes, selection, beautify, flavor) {
     const end = lastLine.start + lastLine.content.length;
     // 範囲整形では、まとまりの全断片 (行頭の入れ物の接頭辞を除く) が選択に入るときだけ。
     if (selection && (start + prefixes[0].length < selection.start || end > selection.end)) continue;
-    blocks.set(index, { rows, prefixes, start, end, line: first });
+    blocks.set(index, { rows, prefixes, start, end, line: first, index, parent: node.parent });
   }
   const edits = [];
   // 閉じないブロックの後ろから数え直すときに、同じ literal を読み直さないよう、タグを 1 回だけ読む。
@@ -1446,13 +1512,23 @@ function htmlBlockEdits(source, lines, nodes, selection, beautify, flavor) {
       skipped = outside;
       first = last + 1;
       if (!valid) continue;
-      const output = group.length === 1
-        ? [beautifiedHtmlRows(group[0].rows.join("\n"), beautify, flavor)]
-        : htmlGroupOutput(group, beautify, flavor);
-      if (output && output.every(Boolean)) {
-        const fragments = group.map((block, part) => htmlFragmentEdit(block, output[part], ending)).filter(Boolean);
-        if (fragments.length) edits.push({ fragments });
-      }
+      edits.push(group);
+    }
+  }
+  return edits;
+}
+
+// 集めた同じ親の断片を、字下げの修正にする。
+function htmlBlockEdits(source, lines, nodes, selection, beautify, flavor) {
+  const ending = preferredEnding(source);
+  const edits = [];
+  for (const group of htmlBlockGroups(source, lines, nodes, selection, flavor)) {
+    const output = group.length === 1
+      ? [beautifiedHtmlRows(group[0].rows.join("\n"), beautify, flavor)]
+      : htmlGroupOutput(group, beautify, flavor);
+    if (output && output.every(Boolean)) {
+      const fragments = group.map((block, part) => htmlFragmentEdit(block, output[part], ending)).filter(Boolean);
+      if (fragments.length) edits.push({ fragments });
     }
   }
   return edits;
@@ -1550,6 +1626,559 @@ function formatHtmlBlocks(source, { parse, render, beautify, selection, exhausti
 
 // 試験用。描画の比較に使う正規化。
 export const htmlInternals = Object.freeze({ normalizedHtml });
+
+// 書式のタグが無いセルは、文書を解析せずに見送る。空行を越えない線形の走査にする。
+const cellFormattingElements = new Set(["p", "ul", "ol", "li", "dl", "pre", "code", "strong", "b", "em", "i", "del", "s", "strike", "a", "img", "blockquote"]);
+function htmlCellsHint(source) {
+  let cell = false;
+  const tokens = /<\/?([A-Za-z][A-Za-z0-9-]*)(?=[\s/>])|(?:\r\n|\r|\n)[ \t>]*(?:\r\n|\r|\n)/gu;
+  for (const match of source.matchAll(tokens)) {
+    const name = match[1]?.toLowerCase();
+    if (!name) cell = false;
+    else if (name === "td" || name === "th") cell = match[0][1] !== "/";
+    else if (cell && match[0][1] !== "/" && cellFormattingElements.has(name)) return true;
+  }
+  return false;
+}
+
+// HTML の属性は、値の無いものも空文字として読む。重複は変換を見送る。
+function cellAttributes(token, decode) {
+  const body = token.replace(/^<\/?[A-Za-z][A-Za-z0-9-]*/u, "").replace(/>$/u, "");
+  const attributes = new Map();
+  for (const match of body.matchAll(/([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>\x60]+)))?/gu)) {
+    const name = match[1].toLowerCase();
+    if (attributes.has(name)) return null;
+    attributes.set(name, decode(match[2] ?? match[3] ?? match[4] ?? ""));
+  }
+  return attributes;
+}
+
+// セルは、明示的に閉じたタグだけで木にする。HTML の暗黙の閉じを推測しない。
+function cellTree(html, dependencies, flavor) {
+  const root = { name: "", children: [] };
+  const stack = [root];
+  for (const { token, text } of htmlPieces(html).pieces) {
+    if (token === undefined) {
+      stack.at(-1).children.push({ text });
+      continue;
+    }
+    const tag = htmlTag(token);
+    if (!tag || rawTextElements.has(tag.name) || tag.name === "table" || /^h[1-6]$/u.test(tag.name)) return null;
+    if (tag.closing) {
+      if (tag.empty || stack.length === 1 || stack.at(-1).name !== tag.name) return null;
+      stack.pop().close = token;
+      continue;
+    }
+    const attrs = cellAttributes(token, dependencies.decodeHTMLAttribute);
+    if (!attrs) return null;
+    const allowed = {
+      a: ["href", "title"], img: ["src", "alt", "title"], ol: ["start"],
+      input: ["type", "checked", "disabled"], pre: ["lang"], code: ["class"],
+    }[tag.name] || [];
+    if (cellFormattingElements.has(tag.name) || tag.name === "br" || tag.name === "dt" || tag.name === "dd" || tag.name === "input") {
+      if ([...attrs.keys()].some((name) => !allowed.includes(name))) return null;
+      if (tag.name === "code" && attrs.size && stack.at(-1).name !== "pre") return null;
+    } else {
+      // 種類 1・6 のタグは、空行の後で HTML のブロックを始めるので残さない。
+      if (flavors.glfm.blockElements.has(tag.name) || ["script", "style", "pre"].includes(tag.name)) return null;
+    }
+    if ((tag.name === "dl" || tag.name === "dt" || tag.name === "dd") && !flavor.parserOptions.extension.descriptionLists) return null;
+    const element = { name: tag.name, open: token, close: "", attrs, children: [] };
+    stack.at(-1).children.push(element);
+    if (!voidElements.has(tag.name)) {
+      if (tag.empty) return null;
+      stack.push(element);
+    }
+  }
+  return stack.length === 1 ? root : null;
+}
+
+function cellPlain(node, decode) {
+  return node.text !== undefined ? decode(node.text) : node.children.map((child) => cellPlain(child, decode)).join("");
+}
+
+function cellStyles(source, nodes, lines) {
+  const styles = { bullet: "-", emphasis: "*", strong: "**" };
+  const seen = new Set();
+  for (const node of nodes) {
+    const type = nodeType(node);
+    let key;
+    if (type === "List" && node.data.value.List.list_type === "Bullet") key = "bullet";
+    else if (type === "Emph") key = "emphasis";
+    else if (type === "Strong") key = "strong";
+    if (!key || seen.has(key)) continue;
+    const raw = sourceSlice(source, lines, node.data.sourcepos);
+    const marker = key === "bullet" ? /^[-+*]/u.exec(raw)?.[0] : /^([*_])\1?/u.exec(raw)?.[0];
+    if (marker) {
+      styles[key] = key === "strong" ? marker[0].repeat(2) : marker[0];
+      seen.add(key);
+    }
+  }
+  return styles;
+}
+
+// 文字の原文を守りながら、Markdown に読まれる記号だけを打ち消す。
+function cellMarkdown(html, { flavor, styles, dependencies }) {
+  const { decodeHTML, decodeHTMLStrict } = dependencies;
+  const tree = cellTree(html, dependencies, flavor);
+  if (!tree) return null;
+  const significant = (children) => children.filter((child) => child.text === undefined || /[^ \t\r\n\f]/u.test(child.text));
+  let sole = significant(tree.children);
+  if (sole.length === 1 && sole[0].name === "p") sole = significant(sole[0].children);
+  if (sole.length === 1 && ["b", "strong", "i", "em", "del", "s", "strike"].includes(sole[0].name)) return null;
+  let changed = false;
+  const fail = () => { throw new Error("このセルは HTML のまま残す。"); };
+  const original = (node) => node.text ?? node.open + node.children.map(original).join("") + node.close;
+  const text = (raw) => {
+    // CommonMark は ; の無い参照を読まず、HTML は数値参照の C1 制御文字を別の文字にする。
+    if (decodeHTML(raw) !== decodeHTMLStrict(raw)) fail();
+    for (const match of raw.matchAll(/&#(x[\da-f]+|\d+);/giu)) {
+      const number = /^x/iu.test(match[1]) ? parseInt(match[1].slice(1), 16) : Number(match[1]);
+      if (number >= 128 && number <= 159 && decodeHTML(match[0]) !== String.fromCodePoint(number)) fail();
+    }
+    const protectedSpans = [
+      ...raw.matchAll(flavor.atoms),
+      ...raw.matchAll(/(?:https?:\/\/|www\.)[^\s<>]+|[\w.!#$%&'*+\-/=?^_\x60{|}~]+@[\w.-]+\.[A-Za-z]{2,}/gu),
+      ...raw.matchAll(/&(?:#[xX][\da-fA-F]+|#\d+|[A-Za-z][A-Za-z\d]+);/gu),
+    ].map((match) => [match.index, match.index + match[0].length]).sort((a, b) => a[0] - b[0]);
+    let cursor = 0;
+    let result = "";
+    for (const match of raw.matchAll(flavor.atoms)) {
+      if (/[\\\x60*_<>|]/u.test(match[0])) fail();
+    }
+    const escape = (part) => part.replace(/\t/gu, " ").replace(/[\\\x60*_\[\]<|~$]|&(?=(?:#\w*|[A-Za-z][A-Za-z\d]*);)/gu, "\\$&");
+    for (const [start, end] of protectedSpans) {
+      if (start < cursor) continue;
+      result += escape(raw.slice(cursor, start)) + raw.slice(start, end);
+      cursor = end;
+    }
+    return result + escape(raw.slice(cursor));
+  };
+  const atomAtStart = new RegExp("^(?:" + flavor.atoms.source + ")", flavor.atoms.flags.replace(/[gm]/gu, ""));
+  const escapeStarts = (value) => value.replace(/(^|\n)([ ]*)(?:([#>+\-=])|(\d{1,9})([.)])|([:~])(?=[ \t]|$))/gu,
+    (all, line, spaces, symbol, number, punctuation, description, offset) => {
+      const tail = value.slice(offset + line.length + spaces.length);
+      if (atomAtStart.test(tail)) return all;
+      return line + spaces + (symbol ? "\\" + symbol : number ? number + "\\" + punctuation : flavor.descriptionProjection ? "\\" + description : description);
+    });
+  const tidy = (value) => value.split("\n").map((line) => line.replace(/^[ \t]+|[ \t]+$/gu, "")).join("\n").replace(/^[ \r\n]+|[ \r\n]+$/gu, "");
+  const finishBreaks = (value) => value.replace(/\u0000/gu, (_, offset) => {
+    const tail = value.slice(offset + 1).replace(/^\u0000*/u, "");
+    const line = tail.split("\n", 1)[0].trim();
+    return !line || blockStart.test(line) || (flavor.descriptionProjection && glfmBlockStart.test(line)) || /^<\/?[A-Za-z][^>]*>$/u.test(line) ? "" : "\n";
+  });
+  const punctuation = (character) => /[\p{P}\p{S}]/u.test(character);
+  const whitespace = (character) => !character || /\s/u.test(character);
+  const flanking = (before, after) => ({
+    left: !whitespace(after) && (!punctuation(after) || whitespace(before) || punctuation(before)),
+    right: !whitespace(before) && (!punctuation(before) || whitespace(after) || punctuation(after)),
+  });
+  const destination = (value) => {
+    if (/[\s\x00-\x1f\x7f]/u.test(value)) fail();
+    return value.replace(/[\\<>()]/gu, "\\$&");
+  };
+  const title = (value) => value === undefined ? "" : /[\r\n\x00-\x1f]/u.test(value) ? fail() : ' "' + value.replace(/[\\"]/gu, "\\$&") + '"';
+  const inline = (children, task = false) => {
+    let markdown = "";
+    let expected = "";
+    for (const [index, node] of children.entries()) {
+      if (node.text !== undefined) {
+        markdown += text(node.text);
+        expected += node.text;
+        continue;
+      }
+      const { name, attrs } = node;
+      if (name === "br") {
+        markdown += node.open + "\u0000";
+        expected += node.open;
+      } else if (name === "code") {
+        const content = decodeHTML(node.children.map(original).join(""));
+        if (node.children.some((child) => child.text === undefined)) fail();
+        if (/[\r\n\x00-\x1f\x7f]/u.test(content) || (/^ /u.test(content) !== / $/u.test(content))) {
+          markdown += original(node); expected += original(node); continue;
+        }
+        const fence = "\x60".repeat(Math.max(0, ...[...content.matchAll(/\x60+/gu)].map((match) => match[0].length)) + 1);
+        const padding = /^\x60|\x60$/u.test(content) || (/^ .* $/u.test(content) && content.trim()) ? " " : "";
+        if (!content) { markdown += original(node); expected += original(node); continue; }
+        markdown += fence + padding + content + padding + fence;
+        expected += original(node);
+        changed = true;
+      } else if (["b", "strong", "i", "em", "s", "strike", "del"].includes(name)) {
+        const kind = ["b", "strong"].includes(name) ? "strong" : ["i", "em"].includes(name) ? "emphasis" : "delete";
+        const marker = kind === "delete" ? "~~" : styles[kind];
+        const content = cellPlain(node, decodeHTML);
+        const before = index ? [...cellPlain(children[index - 1], decodeHTML)].at(-1) || "" : "";
+        const after = index + 1 < children.length ? [...cellPlain(children[index + 1], decodeHTML)][0] || "" : "";
+        const first = [...content][0] || "";
+        const last = [...content].at(-1) || "";
+        const opening = flanking(before, first);
+        const closing = flanking(last, after);
+        const sameKind = (other) => other?.name && (kind === "strong" ? ["b", "strong"] : kind === "emphasis" ? ["i", "em"] : ["s", "strike", "del"]).includes(other.name);
+        if (!content || !opening.left || !closing.right || (marker[0] === "_" && ((opening.right && !punctuation(before)) || (closing.left && !punctuation(after)))) ||
+            sameKind(children[index - 1]) || sameKind(children[index + 1]) || node.children.some(sameKind)) {
+          markdown += original(node); expected += original(node); continue;
+        }
+        const value = inline(node.children);
+        if (value.markdown.startsWith(marker[0]) || value.markdown.endsWith(marker[0])) {
+          markdown += original(node); expected += original(node); continue;
+        }
+        markdown += marker + value.markdown + marker;
+        const canonical = kind === "strong" ? "strong" : kind === "emphasis" ? "em" : "del";
+        expected += "<" + canonical + ">" + value.expected + "</" + canonical + ">";
+        changed = true;
+      } else if (name === "a") {
+        if (!attrs.has("href") || /^\s|\s$/u.test(cellPlain(node, decodeHTML))) fail();
+        const value = inline(node.children);
+        markdown += "[" + value.markdown + "](" + destination(attrs.get("href")) + title(attrs.get("title")) + ")";
+        expected += node.open + value.expected + node.close;
+        changed = true;
+      } else if (name === "img") {
+        if (!attrs.has("src") || [...attrs.values()].some((value) => /[\r\n]/u.test(value))) fail();
+        markdown += "![" + text(attrs.get("alt") || "") + "](" + destination(attrs.get("src")) + title(attrs.get("title")) + ")";
+        expected += attrs.has("alt") ? node.open : node.open.replace(/^<img(?=[\s/>])/iu, (opening) => opening + ' alt=""');
+        changed = true;
+      } else if (name === "input") {
+        if (!task || index !== 0 || attrs.get("type")?.toLowerCase() !== "checkbox") fail();
+        markdown += attrs.has("checked") ? "[x] " : "[ ] ";
+        expected += '<input type="checkbox"' + (attrs.has("checked") ? ' checked=""' : "") + ' disabled="" /> ';
+      } else {
+        if (cellFormattingElements.has(name) || flavors.glfm.blockElements.has(name) || ["li", "dt", "dd"].includes(name)) fail();
+        if (["kbd", "samp"].includes(name) && /[\r\n]/u.test(original(node))) fail();
+        const value = inline(node.children);
+        markdown += node.open + value.markdown + node.close;
+        expected += node.open + value.expected + node.close;
+      }
+    }
+    return { markdown, expected };
+  };
+  const blocks = new Set(["p", "ul", "ol", "pre", "blockquote", "dl"]);
+  const sequence = (children, mode = "blocks", task = false) => {
+    const parts = [];
+    let run = [];
+    const flush = () => {
+      if (!run.length) return;
+      let content = run;
+      if (task) {
+        content = [...content];
+        while (content[0]?.text !== undefined && !content[0].text.trim()) content.shift();
+        if (content[0]?.name === "input") {
+          if (content[1]?.text !== undefined) content[1] = { text: content[1].text.replace(/^\s*/u, "") };
+        }
+      }
+      const value = inline(content, task);
+      const markdown = escapeStarts(tidy(finishBreaks(value.markdown)));
+      if (markdown) parts.push({ markdown, expected: mode === "blocks" ? "<p>" + value.expected + "</p>" : value.expected });
+      else if (value.expected) parts.push({ markdown: "", expected: value.expected });
+      run = [];
+    };
+    let previous;
+    for (const node of children) {
+      if (!blocks.has(node.name)) {
+        run.push(node);
+        if (node.name || node.text?.trim()) previous = node.name || "text";
+        continue;
+      }
+      flush();
+      if (["ul", "ol"].includes(node.name) && previous === node.name) fail();
+      parts.push(block(node, task));
+      previous = node.name;
+    }
+    flush();
+    return { markdown: parts.map((part) => part.markdown).filter(Boolean).join(mode === "tight" ? "\n" : "\n\n"), expected: parts.map((part) => part.expected).join("") };
+  };
+  const block = (node, task = false) => {
+    const { name, attrs } = node;
+    changed = true;
+    if (name === "p") {
+      const content = [...node.children];
+      if (task) {
+        while (content[0]?.text !== undefined && !content[0].text.trim()) content.shift();
+        if (content[0]?.name === "input" && content[1]?.text !== undefined) content[1] = { text: content[1].text.replace(/^\s*/u, "") };
+      }
+      const value = inline(content, task);
+      return { markdown: escapeStarts(tidy(finishBreaks(value.markdown))), expected: node.open + value.expected + node.close };
+    }
+    if (name === "blockquote") {
+      const value = sequence(node.children);
+      return { markdown: value.markdown.split("\n").map((line) => line ? "> " + line.replace(/^\[!/u, "\\[!") : ">").join("\n"), expected: node.open + value.expected + node.close };
+    }
+    if (name === "pre") {
+      let contentNodes = node.children;
+      let language = attrs.get("lang") || "";
+      let codeOpen = "<code>";
+      let raw = contentNodes.map(original).join("");
+      if (contentNodes.length === 1 && contentNodes[0].name === "code") {
+        const code = contentNodes[0];
+        if (code.attrs.has("class")) {
+          const match = /^language-([\w.+-]+)$/u.exec(code.attrs.get("class"));
+          if (!match || (language && language !== match[1])) fail();
+          language = match[1];
+        }
+        contentNodes = code.children;
+        codeOpen = code.open;
+        raw = contentNodes.map(original).join("");
+      } else raw = raw.replace(/^\r?\n/u, "");
+      if (contentNodes.some((child) => child.text === undefined) || (language && !/^[\w.+-]+$/u.test(language)) ||
+          /^(?:mermaid|plantuml|kroki(?:[\w.+-]*)|geojson|topojson|stl|suggestion|math)$/iu.test(language)) fail();
+      const content = decodeHTML(raw).replace(/\r\n|\r/gu, "\n");
+      if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/u.test(content)) fail();
+      const fence = "\x60".repeat(Math.max(2, ...[...content.matchAll(/^[ \t]*\x60+/gmu)].map((match) => match[0].trim().length)) + 1);
+      const markdown = fence + language + "\n" + content + (content.endsWith("\n") ? "" : "\n") + fence;
+      if (language) codeOpen = '<code class="language-' + language + '">';
+      return { markdown, expected: "<pre>" + codeOpen + raw + (!content.endsWith("\n") ? "&#10;" : "") + "</code></pre>" };
+    }
+    if (name === "dl") {
+      const children = node.children;
+      const parts = [];
+      let expected = node.open;
+      let term = false;
+      let described = false;
+      for (const child of children) {
+        if (child.text !== undefined && !/[^ \t\r\n\f]/u.test(child.text)) { expected += child.text; continue; }
+        if (!["dt", "dd"].includes(child.name) || child.children.some((element) => blocks.has(element.name))) fail();
+        const value = inline(child.children);
+        if (child.name === "dt") {
+          if (term && !described) fail();
+          if (described) parts.push("");
+          parts.push(escapeStarts(tidy(finishBreaks(value.markdown))));
+          term = true;
+          described = false;
+        } else {
+          if (!term) fail();
+          parts.push(": " + escapeStarts(tidy(finishBreaks(value.markdown))));
+          described = true;
+        }
+        expected += child.open + value.expected + child.close;
+      }
+      if (!described || !parts.length) fail();
+      return { markdown: parts.join("\n"), expected: expected + node.close };
+    }
+    if (name === "ul" || name === "ol") {
+      const items = significant(node.children);
+      if (!items.length || items.some((item) => item.name !== "li")) fail();
+      const kinds = items.map((item) => {
+        const children = significant(item.children);
+        if (children.every((child) => child.name === "p")) return "loose";
+        if (children.every((child) => !blocks.has(child.name) || child.name === "ul" || child.name === "ol")) return "tight";
+        return "mixed";
+      });
+      if (kinds.includes("mixed") || new Set(kinds).size !== 1) fail();
+      const loose = kinds[0] === "loose";
+      const start = attrs.get("start") ?? "1";
+      // 0 と 1 以外から始まる番号は、MD029 (既定の one_or_ordered) の診断になるので HTML のまま残す。
+      if (!/^\d{1,9}$/u.test(start) || Number(start) > 1) fail();
+      const expectedOpening = name === "ol" && Number(start) === 1 ? "<ol>" : node.open;
+      const expectedItems = new Map();
+      const markdown = items.map((item, index) => {
+        const value = sequence(item.children, loose ? "blocks" : "tight", true);
+        const marker = name === "ul" ? styles.bullet + " " : String(Number(start) + index) + ". ";
+        const body = value.markdown.split("\n").map((line, at) => at ? line ? " ".repeat(marker.length) + line : "" : line).join("\n");
+        expectedItems.set(item, item.open + value.expected + item.close);
+        return marker + body;
+      }).join(loose ? "\n\n" : "\n");
+      return { markdown, expected: expectedOpening + node.children.map((child) => child.text ?? expectedItems.get(child)).join("") + node.close };
+    }
+    return fail();
+  };
+  try {
+    const value = sequence(tree.children);
+    if (!changed || !value.markdown) return null;
+    return { lines: value.markdown.split("\n"), expected: value.expected };
+  } catch {
+    return null;
+  }
+}
+
+function cellAncestorExcluded(nodes, index) {
+  for (let parent = nodes[index].parent; parent !== undefined; parent = nodes[parent].parent) {
+    const type = nodeType(nodes[parent]);
+    if (type === "DescriptionDetails" || type === "FootnoteDefinition" ||
+        ((type === "List" || type === "Item") && nodes[parent].data.value[type].tight)) return true;
+  }
+  return false;
+}
+
+// 親の HTML が開いた表の文脈も、子の入れ物へ渡す。子の中で開いた表は外へ持ち出さない。
+function cellTableContexts(nodes) {
+  const contexts = new Map();
+  const visit = (parent, tables, raw) => {
+    for (const index of childIndices(nodes, parent)) {
+      contexts.set(index, { tables, raw });
+      const html = nodes[index].data.value.HtmlBlock;
+      if (html && (html.block_type === 6 || html.block_type === 7)) {
+        const result = htmlPieces(html.literal, raw);
+        for (const { token, raw: rawText } of result.pieces) {
+          if (token === undefined || rawText) continue;
+          const tag = htmlTag(token);
+          if (tag?.name === "table" && !tag.empty) tables = Math.max(0, tables + (tag.closing ? -1 : 1));
+        }
+        raw = result.raw;
+      } else visit(index, tables, raw);
+    }
+  };
+  visit(0, 0, null);
+  return contexts;
+}
+
+// 同じ親の断片から table の深さを持ち越し、1 つの断片で明示的に閉じたセルだけを集める。
+function markdownCellEdits(source, lines, nodes, selection, flavor, dependencies) {
+  const styles = cellStyles(source, nodes, lines);
+  const contexts = cellTableContexts(nodes);
+  const ending = preferredEnding(source);
+  const edits = [];
+  for (const group of htmlBlockGroups(source, lines, nodes, selection, flavor)) {
+    let { tables, raw } = contexts.get(group[0].index);
+    for (const fragment of group) {
+      const literal = fragment.rows.join("\n");
+      let offset = 0;
+      let open = null;
+      const continuation = fragment.rows.length > 1 ? fragment.prefixes[1] : fragment.prefixes[0].replace(/[^>]/gu, " ");
+      const offsets = [];
+      let rowStart = 0;
+      for (const row of fragment.rows) { offsets.push(rowStart); rowStart += row.length + 1; }
+      const actualOffset = (at) => {
+        const row = cellOffsetRow(offsets, at);
+        return lines[fragment.line - 1 + row].start + fragment.prefixes[row].length + at - offsets[row];
+      };
+      const excluded = cellAncestorExcluded(nodes, fragment.index);
+      const pieces = htmlPieces(literal, raw);
+      raw = pieces.raw;
+      for (const piece of pieces.pieces) {
+        const value = piece.token ?? piece.text;
+        const begin = offset;
+        offset += value.length;
+        if (piece.token === undefined || piece.raw) continue;
+        const tag = htmlTag(piece.token);
+        if (!tag) continue;
+        if (tag.name === "table") {
+          if (open) open.invalid = true;
+          tables = Math.max(0, tables + (tag.closing ? -1 : 1));
+        }
+        if (tag.name !== "td" && tag.name !== "th") continue;
+        if (!tag.closing) {
+          if (open) { open.invalid = true; continue; }
+          if (tables && !tag.empty && !excluded) open = { name: tag.name, token: piece.token, start: offset };
+          continue;
+        }
+        if (!open) continue;
+        if (open.name !== tag.name || open.invalid) { open = null; continue; }
+        const valueOfCell = cellMarkdown(literal.slice(open.start, begin), { flavor, styles, dependencies });
+        if (valueOfCell) {
+          const start = actualOffset(open.start);
+          const end = actualOffset(begin);
+          const body = valueOfCell.lines.map((line) => line ? continuation + line : continuation.trimEnd()).join(ending);
+          const replacement = ending + continuation.trimEnd() + ending + body + ending + continuation.trimEnd() + ending + continuation;
+          edits.push({ start, end, replacement, expected: valueOfCell.expected.replace(/\n/gu, ending + continuation),
+            markdown: valueOfCell.lines.join("\n"), cellExpected: valueOfCell.expected, open: open.token, close: piece.token });
+        }
+        open = null;
+      }
+    }
+  }
+  return edits;
+}
+
+function applyCellEdits(source, edits, expected = false) {
+  return [...edits].sort((a, b) => b.start - a.start).reduce((text, edit) =>
+    text.slice(0, edit.start) + (expected ? edit.expected : edit.replacement) + text.slice(edit.end), source);
+}
+
+// 昇順の行の開始位置から、その位置を含む行を二分探索する。
+function cellOffsetRow(starts, offset) {
+  let low = 0;
+  let high = starts.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (starts[middle] <= offset) low = middle + 1;
+    else high = middle;
+  }
+  return Math.max(0, low - 1);
+}
+
+// 開きと閉じが同じ親の HTML のブロックとなり、その間に字下げのコードができていないことを確かめる。
+function cellEditsLanded(source, nodes, edits) {
+  const starts = linesOf(source).map((line) => line.start);
+  const openings = new Map();
+  const closings = new Map();
+  const indented = [];
+  for (const node of nodes) {
+    if (nodeType(node) === "HtmlBlock") {
+      openings.set(node.data.sourcepos.end.line, node);
+      closings.set(node.data.sourcepos.start.line, node);
+    } else if (nodeType(node) === "CodeBlock" && !node.data.value.CodeBlock.fenced) {
+      indented.push([node.data.sourcepos.start.line, node.data.sourcepos.end.line]);
+    }
+  }
+  const codeSpans = sortedSpans(indented);
+  const inside = [];
+  let shift = 0;
+  for (const edit of [...edits].sort((a, b) => a.start - b.start)) {
+    const start = edit.start + shift;
+    const end = start + edit.replacement.length;
+    const openLine = cellOffsetRow(starts, start) + 1;
+    const closeLine = cellOffsetRow(starts, end) + 1;
+    const opening = openings.get(openLine);
+    const closing = closings.get(closeLine);
+    if (!opening?.data.value.HtmlBlock.literal.trimEnd().endsWith(edit.open) ||
+        !closing?.data.value.HtmlBlock.literal.trimStart().startsWith(edit.close) || opening.parent !== closing.parent ||
+        overlapsSpans(codeSpans, openLine + 1, closeLine)) return null;
+    inside.push([start, end]);
+    shift += edit.replacement.length - (edit.end - edit.start);
+  }
+  return inside;
+}
+
+function markdownCells(source, { parse, render, selection, exhaustive, flavor, dependencies }) {
+  if (!exhaustive && !htmlCellsHint(source)) return source;
+  const lines = linesOf(source);
+  const before = parse(parsedText(source, lines, flavor).text);
+  const edits = markdownCellEdits(source, lines, before, selection, flavor, dependencies);
+  if (!edits.length) return source;
+  const semantic = { decodeHTML: dependencies.decodeHTML, decodeHTMLAttribute: dependencies.decodeHTMLAttribute };
+  const normalize = (html) => normalizedHtml(html, flavor, 0, null, semantic);
+  // セルごとの描画は、コメントで分けた 1 つの文書を 1 回描いて確かめる。
+  const separator = "<!-- mdfmt-html-cells-separator -->";
+  const rendered = render(edits.map((edit) => edit.markdown).join("\n\n" + separator + "\n\n")).split(separator);
+  const candidates = edits.filter((edit, index) => normalize(rendered[index] || "") === normalize(edit.cellExpected));
+  if (!candidates.length) return source;
+  const atoms = (text) => JSON.stringify([...text.matchAll(flavor.atoms)].map((match) => match[0]));
+  const matter = frontMatter(source, lines, flavor)?.raw || null;
+  const listSequence = (nodes, text, inside = []) => {
+    const textLines = linesOf(text);
+    const spans = sortedSpans(inside);
+    return JSON.stringify(nodes.filter((node) => {
+      if (!["List", "DescriptionItem"].includes(nodeType(node))) return false;
+      const start = sourceOffset(text, textLines, node.data.sourcepos.start, false);
+      return !overlapsSpans(spans, start, start + 1);
+    }).map((node) => node.data.value[nodeType(node)].tight));
+  };
+  const lists = listSequence(before, source);
+  const originalAtoms = atoms(source);
+  const accepted = [];
+  const accept = (batch) => {
+    if (!batch.length) return;
+    const chosen = [...accepted, ...batch];
+    const candidate = applyCellEdits(source, chosen);
+    const candidateLines = linesOf(candidate);
+    const projected = parsedText(candidate, candidateLines, flavor);
+    const nodes = parse(projected.text);
+    const inside = cellEditsLanded(candidate, nodes, chosen);
+    const expected = applyCellEdits(source, chosen, true);
+    if (inside && atoms(candidate) === originalAtoms && (projected.matter?.raw || null) === matter && listSequence(nodes, candidate, inside) === lists &&
+        normalize(render(projected.text)) === normalize(render(parsedText(expected, linesOf(expected), flavor).text))) {
+      accepted.push(...batch);
+      return;
+    }
+    if (batch.length === 1) return;
+    const middle = Math.ceil(batch.length / 2);
+    accept(batch.slice(0, middle));
+    accept(batch.slice(middle));
+  };
+  accept(candidates);
+  const result = applyCellEdits(source, accepted);
+  if (selection) selection.end += result.length - source.length;
+  return result;
+}
 
 // 全角の文字 (Unicode の East Asian Width が F・W・H の文字と、絵文字。広めに取る)。両側が全角の空白で折ると、Firefox などは
 // 改行を消す (CSS Text の segment break の決まり) ので、空白が見えなくなる。ハングルは、この決まりの外 (改行が空白になる)。
@@ -1872,7 +2501,15 @@ export async function formatMarkdown(source, options = {}) {
   // loose のリストを最初に詰める。詰めた文書を、この後の修正の基準 (緩い検査の最初の文書) にする。詰める処理は構文木を
   // ノードごとに確かめるので、基準を替えても、守る記法・リテラル・ほかのリストの tight は元の文書と同じ。
   // markdownlint の修正 (MD031・MD032 など) が項目の中に空行を足して loose に戻すものは、緩い検査のリストの並びで落ちる。
-  const start = selected.tightLists ? tightenLists(source, { parse, selection, exhaustive, flavor }) : source;
+  const tightened = selected.tightLists ? tightenLists(source, { parse, selection, exhaustive, flavor }) : source;
+  const cells = selected.htmlCells
+    ? markdownCells(tightened, { parse, render, selection, exhaustive, flavor, dependencies })
+    : tightened;
+  // 新しくできた loose のリストも同じ保存で詰める。次の整形で初めて詰まることを防ぎ、
+  // html_cells で許す差と、tight_lists がノードごとに確かめて許す差を別々に保つ。
+  const start = selected.tightLists && cells !== tightened
+    ? tightenLists(cells, { parse, selection, exhaustive, flavor })
+    : cells;
   const snapshots = new Map();
   const snapshotOf = (text) => {
     if (!snapshots.has(text)) {

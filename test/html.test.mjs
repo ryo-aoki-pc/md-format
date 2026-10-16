@@ -31,7 +31,7 @@ async function project(t) {
   t.after(() => rm(cwd, { recursive: true, force: true }));
   await writeFile(path.join(cwd, ".markdownlint.json"), JSON.stringify({ default: true }));
   // HTML のブロックの整形だけを確かめる。入れ物の中の例は loose のリストのまま保つ (詰めることは lists.test.mjs で確かめる)。
-  return { filename: path.join(cwd, "example.md"), cwd, runtimeDir, fixes: { tight_lists: false } };
+  return { filename: path.join(cwd, "example.md"), cwd, runtimeDir, fixes: { tight_lists: false, html_cells: false } };
 }
 
 // 整形の結果が expected になり、2 回目で変わらず、近道の有無で同じで、整形の前後で描画が変わらないこと。
@@ -504,7 +504,7 @@ test("HTML の整形器が無い runtime では、HTML のブロックのある�
   const partial = path.join(options.cwd, "runtime-without-js-beautify");
   await mkdir(path.join(partial, "node_modules"), { recursive: true });
   await writeFile(path.join(partial, "package.json"), "{}");
-  for (const name of ["comrak", "markdownlint-cli2"]) {
+  for (const name of ["comrak", "markdownlint-cli2", "entities"]) {
     await symlink(path.join(runtimeDir, "node_modules", name), path.join(partial, "node_modules", name), "junction");
   }
   const settings = { ...options, runtimeDir: partial };

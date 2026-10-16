@@ -11,6 +11,7 @@ GFM と GLFM の Markdown を、描画を変えずに整形する `mdfmt` コマ
   修正を当てた文書を Comrak（GitLab と同じ系統の解析器）で読み直し、構造・リテラル・GitLab の記法が変わる修正は当てない
 - loose のリスト（項目の間に空行のあるリスト）を詰めて tight にする。どの修正も、詰まったリストを loose にしない
 - 有効にすると、長すぎる行を既にある空白の位置で折る（分類 `line_length`。幅は markdownlint の MD013 の設定）
+- HTML の表の書式のあるセルを、空行で区切った Markdown にする（分類 `html_cells`）
 - 埋め込んだ HTML のブロック（`<table>`・`<details>` など）を、タグの入れ子に合わせて字下げする
 - 直す対象を、分類名かルール名（`MD026`・`no-trailing-punctuation`）で選べる
 - 標準入力・ファイル・フォルダを扱える。`--check` で、整形の要るファイルを見つけられる
@@ -58,9 +59,10 @@ mdfmt --help
 ## 直す対象の選び方
 
 `--enable-fixes`・`--disable-fixes` に、分類名かルール名をカンマで区切って渡す。ルール名の指定は分類の指定より強い。
-分類と既定の一覧は [docs/reference/rules.md](docs/reference/rules.md) にある。markdownlint のルールでない分類は次の 2 つ。
+分類と既定の一覧は [docs/reference/rules.md](docs/reference/rules.md) にある。markdownlint のルールでない分類は次の 3 つ。
 
 - `tight_lists`（既定で有効）: loose のリストを詰める
+- `html_cells`（既定で有効）: HTML の表の書式のあるセルを Markdown にする
 - `html`（既定で有効）: HTML のブロックを字下げする
 
 既定で無効の分類のうち、`line_length`（MD013）は長すぎる行を空白の位置で折る。幅は markdownlint の MD013 の `line_length`（既定 80）。
@@ -211,6 +213,29 @@ Markdown のセルがある表は、その表の部品をすべて表の字下�
     <td><kbd>Ctrl</kbd>+<kbd>J</kbd></td>
     <td>日本語入力の切り替え<br>挿入モードで使う</td>
   </tr>
+</table>
+```
+
+HTML の表の書式のあるセルは、空行で区切った Markdown にする。文字だけ・`<br>`・`<kbd>` などだけのセルはそのままにし、表の部品を表の字下げにそろえる。
+
+整形前:
+
+```markdown 整形前
+<table><tr><td>a<br>b</td><td><code>dnf</code> で <b>root</b> として入れる</td></tr></table>
+```
+
+整形後:
+
+```markdown 整形後
+<table>
+<tr>
+<td>a<br>b</td>
+<td>
+
+`dnf` で **root** として入れる
+
+</td>
+</tr>
 </table>
 ```
 

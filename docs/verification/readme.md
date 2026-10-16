@@ -408,3 +408,31 @@ GitHub の Markdown API（`POST /markdown`。gh 2.102.0 の認証）で、送っ
 - script の escaped などの状態は、HTML のブロックをまたいで持ち越さない（文書全体の描画の比べで見分ける）
 - Neovim の保存の整形そのもの
 - abiko-pi での速さ
+
+## HTML の表のセルを Markdown にする検証（2026-10-16、Codex の下書き）
+
+対象は、分類 `html_cells` を足した作業ツリー。Windows、Node.js 26.10.0 で確かめた。
+
+### 自動テスト
+
+- `npm test` は 278 件のうち 276 件が成功し、1 件が失敗、1 件を飛ばした
+- 失敗は、導入の試験（`test/setup.test.mjs:93`）の `pwsh.exe` の起動。別に起動しても `spawn EPERM` になった。この環境の起動制限に当たる 1 件で、ほかの試験は成功した
+- `test/cells.test.mjs` の 31 件と `test/semantic-html.test.mjs` の 4 件が成功した。GLFM・GFM の要素・除外・入れ物・範囲・設定・CLI・CRLF、セルと文書全体の描画の確かめ、問題のあるセルだけを外す形を含む
+- 新しいセルのすべての見本で、2 回目の整形で変わらず、`exhaustive: true` と近道ありの出力が同じだった
+- `test/reference.test.mjs` の 8 件が成功した。新しい節の 15 見本と README の表の例は、CLI の実際の出力で書き、整形し直して確かめた
+- `test/html.test.mjs` の 35 件が成功した。字下げの試験では `html_cells` を止め、今までの入力と期待を保った
+- `test/fast-paths.test.mjs` の 10 件が成功した。書式の無いセルではこの段の解析・描画は 0 回。64 個のコードのセルは、`html` を止めると、描画 3 回・解析 2 回で確かめ、セル変換後の解析を後の段でも使い回した
+- 全 `.mjs` 20 本の `node --check` と `git diff --check` が通った。変更したソースと文書は LF
+- `entities` 8.1.0 を直接の依存に足した。lock の差は根の `dependencies` の 1 行だけで、既存の `node_modules/entities` の版・integrity を含む記録は同じ
+
+### 計画から足した段
+
+- セルを変換すると、HTML の loose のリストが Markdown の loose のリストになる。計画どおり先頭でだけ詰めると、2 回目の整形で初めて詰まる形があった
+- セルの変換で文書が変わり、`tight_lists` が有効なら、セルの描画の確かめが終わった後にも既存の `tightenLists` を通す。リストごとに構文木を比べる検査を保ち、同じ保存で仕上げる
+- 両方言の箇条書きと番号付きリストで、初回から詰まり、2 回目で変わらないことを試験にした。`tight_lists` を止めた見本では loose のまま保つ
+
+### レビューで確かめた形
+
+- 未引用属性の末尾の `/` は値に含める。`<img src=a/>` は `a/` を保ち、`<input type=checkbox/>` をチェックボックスに変えない
+- 空の `pre`、複数の `dd`、共通の数値参照、全角空白・NBSP を試験に足した。HTML と意味の違う数値参照や、項目の間に文字のあるリストは残す
+- loose の段落内のチェックボックスは、Comrak が段落の外へ移して描く。この差は許していないので、セルを HTML のまま残す
