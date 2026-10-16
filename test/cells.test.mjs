@@ -67,14 +67,16 @@ test("html_cells は既定で有効で、コード・強調・取り消し線を
 test("リンク・画像・裸の URL と共通の実体参照を扱う", async (t) => {
   const options = await project(t);
   for (const flavor of ["glfm", "gfm"]) {
-    for (const [name, html, markdown] of [
+    for (const [name, html, markdown, expected] of [
       ["リンク", '<a href="https://例.jp/a?x=1&amp;y=2" title="題">文字</a>', '[文字](https://例.jp/a?x=1&y=2 "題")'],
       ["画像", '<img src="a.png" alt="i" title="t">', '![i](a.png "t")'],
       ["alt 無し", '<img src="a.png">', "![](a.png)"],
+      ["引用符の無い src の末尾の /", "<img src=a.png/>", "![](a.png/)", '<p><img src="a.png/" alt=""></p>'],
       ["括弧", '<a href="https://example.com/a(b)">文字</a>', "[文字](https://example.com/a\\(b\\))"],
       ["裸の URL", "<code>x</code> https://example.com/a www.example.com a@example.com", "`x` <https://example.com/a> www.example.com <a@example.com>"],
       ["実体参照", "<code>x</code> &quot; &nbsp; &#39; &amp;", "`x` &quot; &nbsp; &#39; &amp;"],
-    ]) await assertFormats({ ...options, flavor }, table(html), markdownTable(markdown), flavor + ": " + name);
+    ]) await assertFormats({ ...options, flavor }, table(html), markdownTable(markdown), flavor + ": " + name,
+      expected === undefined ? undefined : table(expected));
   }
 });
 
@@ -188,6 +190,25 @@ test("対象外のセルと描画の違うセルは HTML のまま残す", async
     ["既に Markdown", markdownTable("`x` と **太字**")],
     ["パイプの表", lines("| 列 |", "| --- |", "| <code>x</code> |")],
   ]) await assertFormats(options, input, input, name);
+});
+
+test("CommonMark の形でないセルのタグと中のタグは、Markdown に変えない", async (t) => {
+  const options = { ...await project(t), fixes: { html: false } };
+  for (const flavor of ["glfm", "gfm"]) {
+    const settings = { ...options, flavor };
+    for (const html of [
+      '<a/href="u0">リンク</a><img src=a0.png>',
+      '<a href="u0"/title="v">リンク</a><img src=a0.png>',
+      '<a title="t0"href="u0">リンク</a><img src=a0.png>',
+      '<a href="u0">リンク</a\u00a0><img src=a0.png>',
+    ]) await assertFormats(settings, table(html), table(html), flavor + ": 中のタグ: " + html);
+    for (const tag of ["td", "th"]) {
+      const opening = lines('<table><tr><' + tag + ' title="t0"data-x=y><img src=a0.png></' + tag + '></tr></table>');
+      await assertFormats(settings, opening, opening, flavor + ": " + tag + " の開きタグの属性の間の空白");
+      const closing = lines("<table><tr><" + tag + "><img src=a0.png></" + tag + "/></tr></table>");
+      await assertFormats(settings, closing, closing, flavor + ": " + tag + " の閉じタグの /");
+    }
+  }
 });
 
 test("成り立たない強調とつながる区切りは HTML のまま残す", async (t) => {

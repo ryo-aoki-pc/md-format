@@ -142,7 +142,7 @@ test("every fixable rule has a section with at least one example", () => {
 test("the HTML block section shows the category and examples for tables, nested HTML, and Markdown inside HTML", () => {
   const html = [...sections].filter(([id]) => id.startsWith("html:"));
   assert.deepEqual(html.map(([id]) => id),
-    ["html:表", "html:入れ子の表", "html:セルの中の Markdown", "html:折りたたみ", "html:入れ物の中", "html:変えないもの"]);
+    ["html:表", "html:入れ子の表", "html:セルの中の Markdown", "html:折りたたみ", "html:入れ物の中", "html:空白をそのまま描く要素", "html:変えないもの"]);
   for (const [id, section] of html) assert.ok(section.examples.length, `${id} has an example`);
   assert.ok(html.flatMap(([, section]) => section.examples).some(({ input, expected }) => input !== expected),
     "HTML の節に、整形で変わる例がある");

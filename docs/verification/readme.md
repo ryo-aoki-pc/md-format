@@ -500,3 +500,145 @@ GitHub の Markdown API（`POST /markdown`。gh 2.102.0 の認証）で、送っ
 
 - Neovim の保存の整形そのもの（LazyVimStarter の配線の試験は、導入を更新した後に通す）
 - abiko-pi での速さ
+
+## listing と HTML のタグの読み方の比べ方の検証（2026-10-17）
+
+対象は、`a7df5b7` に、HTML のブロックの比べ方（`normalizedHtml`）で listing・xmp・plaintext の中の空白を保ち、タグを HTML の字句解析と同じ区切りで読むようにした版（この節を足したコミット）。比べる前の版は `a7df5b7`。
+
+### 直した穴
+
+前の版は、次の形で描画の変わる整形を当てるか、描画の違う HTML を同じ値にしていた（どれも試験用に作った文書で確かめた）。
+
+- `<div><listing>a   b</listing></div>` の `a   b` を `a b` に詰め、`<listing>` の中の `<b>a</b>   <i>b</i>` を字下げした。ブラウザの既定のスタイルは、listing・xmp・plaintext を pre と同じ white-space: pre で描く
+- `<div style="white-space: pre"><xmp/foo></div></xmp>hello   world</div>` と、`hello world` にしたものを同じ値にした（`<script/foo>` も同じ）。
+  HTML では、タグ名の後の `/` は、`>` が続かなければ属性の前の区切りで、xmp は開く。js-beautify の整形では当たらなかった
+- `<img src=a.png/>`（src は `a.png/`）を `<img src=a.png />`（src は `a.png`）に、`<a href=x/>y</a>` を `<a href=x />y</a>` にした。比べ方が `/>` の前の空白を消していた。
+  GitHub と GitLab でも、画像とリンクの URL が変わった（下の「描画の比べ」）
+- 同じ読み方の穴:
+  - 属性の間に空白の無いタグ（`<xmp a="b"c>`）、`=` で始まる属性名、名前や引用符の無い値の中の `"`・`'`・`<`・`=`・`` ` ``、英数字と `-` 以外を含むタグ名を、タグと読まなかった。逆に、NBSP などをタグの中の区切りにしていた
+  - `</ x>` と `<?x …` の後ろの `<div>` を、ブロック要素のタグと読んだ。HTML では、最初の `>` までの偽のコメント（処理命令）
+  - `style` の `white-space` を、`/` や引用符の直後の属性と、実体参照で書いた値（`white&#45;space`）で見落とした
+  - 名前を `toLowerCase` で小文字にし、K（U+212A）を k にした（`<blocKquote>` を blockquote と読んだ）
+  - noscript の中の `<xmp>a   b</xmp>` と `a b` を同じ値にした。スクリプトを切ったブラウザや、noscript の中を HTML として描くサービスでは、xmp の中の空白が出る
+  - svg の `<text xml:space="preserve">a   b</text>` と `a b` を同じ値にした。ブラウザは、この text を white-space: pre で描いた
+  - svg・math の中の `<![CDATA[<span>a   b</span> > c]]>` を最初の `>` で切り、後ろを畳む文字として読んだ。svg・math の中の CDATA は、`]]>` までが文字
+
+この版の読み方:
+
+- listing・xmp・plaintext と、`xml:space` のある要素（値によらない）を、空白をそのまま描く要素に数える。listing・xmp・plaintext は、js-beautify にも中を整形しない要素（`content_unformatted`）として渡す
+- タグ・コメント・宣言・処理命令・偽のコメントを、HTML の字句解析（WHATWG の data 状態）と同じ区切りで読む。
+  CDATA は、HTML の中では最初の `>` までの偽のコメント、svg・math の中では `]]>` までの文字なので、`<![CDATA[` がある HTML は、`]]>` までを 1 つにした読み方の値も作って比べる
+- 引用符が閉じないまま文書が終わるタグは、HTML では捨てられる（描かれない）が、文字として比べる（厳しい側）
+- CommonMark の文法のタグの形のタグは、名前・属性・閉じの印から組み立て直して比べる。閉じの印の `/` と、引用符の無い値の末尾の `/` を分ける。名前は ASCII の英字だけを小文字にする
+- CommonMark の形でないタグ（`<a/href="x">`・`<a href="x"/title="y">` など）は、要素の開きと閉じは WHATWG の読み方で数えるが、比べるときは原文のまま・空白の境にせず、`html_cells` もそのセルを Markdown にしない。
+  GitHub がこうしたタグを WHATWG と違う読み方で描くため（下の「描画の比べ」）。前の版は、こうしたタグをタグと読まず、整形を拒んでいた
+- 対や字下げの候補作りも同じ読み方を使う。閉じタグの末尾の `/`（`</div/>`）では空要素にしない（HTML はふつうの閉じタグとして閉じる）
+
+### 環境
+
+- Windows 11 Pro 10.0.26300、Node.js 26.10.0
+- abiko-pi: Raspberry Pi 5 の AlmaLinux 10.2（aarch64）、Node.js 22.23.2
+- 依存は `package-lock.json` のまま（comrak 0.48.0-rc.0・markdownlint-cli2 0.23.3・js-beautify 2.0.3・entities 8.1.0）
+- 文書の集まりは、上の節と同じ 225 本
+- GitHub の描画は Markdown API（`gh api markdown`、`mode=markdown`）、GitLab の描画は gitlab.com の Markdown API（`gfm: true`）。送ったのは試験用に作った文書だけ
+- ブラウザの HTML の解析は、Claude のデスクトップアプリの内蔵ブラウザ（Chrome 152.0.7977.130）の `DOMParser` と `getComputedStyle`
+
+### 自動テスト
+
+- Windows: `npm test` の 285 件のうち 284 件が成功し、1 件を飛ばした
+- abiko-pi: `npm ci --ignore-scripts` の後、285 件のうち 284 件が成功し、1 件を飛ばした
+- どちらも、全 `.mjs` の `node --check` と `git diff --check` が通った
+- 足した試験: `test/html.test.mjs` 5 件（空白をそのまま描く要素の整形・属性の名前と値の記号・CDATA と `xml:space` と noscript・CommonMark の形でないタグの整形・セルの比べの属性の読み方）と、
+  今ある試験の組（listing・`/` の区切り・偽のコメント・閉じの印と値の `/`・`--!>` のコメントなど）。`test/cells.test.mjs` 1 件（CommonMark の形でないタグのセル）と、`<img src=a.png/>` のセルが `![](a.png/)` になる組
+- この版の `test/html.test.mjs` と `test/cells.test.mjs` を前の版の `format.mjs` にかけると、73 件のうち 7 件が落ちた（足した試験が、直した穴を見分ける）
+
+### ブラウザの HTML の解析と突き合わせる
+
+`htmlTokens`（タグ・コメントなどの区切り）と `htmlTagParts`（タグの名前と属性）を写したものを内蔵ブラウザで動かし、ランダムに作った文書を `DOMParser` の結果と比べた。
+
+- 1 つのタグ（`<q` に、名前の文字と、空白・`/`・`=`・引用符・`<`・`` ` ``・`>`・NBSP・K（U+212A）などを 0〜14 個つなげたもの）の後ろに、閉じない引用符を閉じる文字と `END` を置いた文書 33,000 個:
+  最初の要素の名前と属性（名前・値。同じ名前は最初のもの）と、body の文字が、どれも同じだった。属性のあるタグは約 17,000 個、名前の直後の `/` で区切ったタグは約 6,100 個
+- コメント・`--!>`・`<!-->`・`<!--->`・`<!`・`<?`・`</`・`</>`・`</ b>`・`<!DOCTYPE x>`・タグなどの断片を 1〜12 個並べた文書 33,000 個: body の文字（タグ・コメントなどを除いた文字）が、どれも同じだった
+- 文書の先頭には文字 `X` を置いた（文書の先頭の空白は、HTML の解析が body の前で捨てるため）
+- 前の版の正規表現で同じ文書（10,000 個ずつ）を読むと、タグの文書の 8,816 個、断片の文書の 7,131 個で body の文字が違った（突き合わせが穴を見分ける）
+
+### 前の版と出力を比べる
+
+`a7df5b7` の `format.mjs` と、この版の `format.mjs` を、同じ依存（`--runtime-dir`）で文書の集まりの 225 本に 1 本ずつ別のプロセスでかけ、標準出力と成否を比べた（既定の分類）。
+
+- GLFM: 同じ 225 本、違う 0 本。誤り 0。この版の出力を整形し直しても、225 本すべて変わらない
+- GFM（`--flavor gfm`）: 同じ 225 本、違う 0 本。誤り 0。2 回目でも変わらない
+- 変わらないのは、225 本を Comrak で描いた HTML（GLFM と GFM の設定）の約 386,000 個のタグ・コメントで、前の版とこの版の区切りが 1 つも違わず、
+  どのタグも CommonMark の形で、listing・xmp・plaintext のタグ、引用符の無い値の末尾の `/`、CDATA、`xml:space` が無いため
+
+### 試験用の文書で確かめた形
+
+- この版の整形: `<div><listing>a   b</listing></div>` は中を保って外を字下げし（`<div>`・`  <listing>a   b</listing>`・`</div>`）、`<listing>` の中のタグは字下げしない。
+  `<div><xmp>` の中にタグに似た文字がある形は、前の版は js-beautify が中を字下げして比べで拒んでいたが、この版は中を変えずに外を字下げする
+- 変えない形: 上の「直した穴」の形、`<div><p><img src=a.png/></p></div>`、`<div><plaintext>` の後ろ、CommonMark の形でないタグを含むブロックとセル
+  （`<a href="u0"/title="v">`・`title="t0"data-x=y` の表・`</div/>` のまとまり。js-beautify が書き直すので比べで拒む）
+- 前の版は整形し、この版は変えなくなった形: `<div><p>本文</p/></div>` と `<table><tr><td><b>a</b></td/></tr></table>`。
+  前の版は `</p/>`・`</td/>` を `</p />`・`</td />` に書き直していた。この版は CommonMark の形でない閉じタグとして原文のまま比べるので拒む（厳しい側）
+- 確かめて前の版と同じだった形: CRLF の文書の複数行のコメント（CRLF のまま整形する）、
+  `<img src="a.png" / >` と `<br / >`（HTML でも閉じの印にならず、js-beautify が `/>` に書き直すので拒む）
+
+### 描画の比べ（GitHub・GitLab）
+
+試験用の文書（上の「直した穴」の形、xmp・plaintext を含む div、`</ <div>` と `<?x <div>` の段落、`</div/>` のまとまり、属性の間に空白の無い表）を、元の文書・前の版の出力・この版の出力で描いた。
+
+- この版の出力: GitHub（GFM として整形）・GitLab（GLFM として整形）とも、元の文書と、描画に出ない空白の違いを除いて同じ
+- 前の版の出力: `<img src=a.png/>` は、GitHub・GitLab とも画像の URL が `a.png/` から `a.png` に変わった。`<a href=x/>y</a>` は、両方ともリンク先が `x/` から `x` に変わり、GitHub ではリンクの文字がリンクの外に出た
+- listing: GitHub・GitLab ともタグを消し、中の文字を div の文字として描いた（空白は畳まれて見える）。前の版の詰めた出力も、見た目は変わらない。listing を描くブラウザや、Comrak の HTML をそのまま描く所では変わる
+- GitLab は `<xmp/foo>` を xmp の開きと読んで中の `</div>` を文字にし、`</ <div>` と `<?x <div>` を偽のコメントにした（WHATWG と同じ）
+- GitHub は WHATWG と違う読み方をした:
+  - `</ <div>` の `<div>` を要素にし、`<xmp/foo>` の中の `</div>` で div を閉じた。この版の比べ方は、原文のまま比べるか、2 つの読み方の両方で比べるので、GitHub の読み方に対しても厳しい側
+  - `/` で区切った属性を落とした: `<a/href="u0" title="v">x</a>` はリンクごと消え、`<img/src="a.png" alt="x">` は src が消え、`<a href="u0"/title="v">x</a>` は title が消えた。
+    `<a href="u0"title="v">`（引用符の後に空白なし）・`<img src="a.png"alt="x">`・`<a href=u0/ title="v">` は、ふつうの書き方と同じだった（GitLab はどれも WHATWG と同じ）。
+    CommonMark の形でないタグを原文のまま比べ、セルを Markdown にしないのは、このため（js-beautify が `<a /href="u0">` のように書き直すと、GitHub では描画が変わりうる）
+- gitlab.com の Markdown API は、最後のコミットの後に一時的に 503 を返した。最後の版の試験用の文書の出力が、どれもその前に描いた文字列と同じ（新しい版の出力か、変えない元の文書）ことを確かめ、その描画を使った
+
+### レビュー
+
+- Antigravity CLI（`gemini-3.8-flash-high`。setup-notes の手順の使い捨てのフォルダーで 3 回。どれも SUCCESS で、拒まれた操作は無く、フォルダーは変わらなかった）と、
+  Grok Build 1.0.52（読み取り専用。1 回目はフォルダーが変わらず全文を返した。2 回目は途中で使える量が尽きて止まった（402 Payment Required）ので、飛ばした）。指摘はどれも、ブラウザか実際の整形で確かめた
+- 採った:
+  - svg・math の中の CDATA（Grok・Antigravity）。CDATA があるときだけ、`]]>` までを 1 つにした読み方を足した（HTML の中の読み方を外すと、`<![CDATA[ > <pre> ]]>a   b</pre>` の pre を見落とすため、外さない）
+  - 閉じタグの末尾の `/` で空要素にしていた（Grok・Antigravity）
+  - 文書の書き方（Grok・Antigravity）。rules.md に、CommonMark の形でないタグの扱いと、変えないセルの例を足した（Antigravity の 3 回目）
+- 調べて採った: svg の `xml:space="preserve"`（CDATA の指摘を確かめるうちに見つけた）、GitHub の `/` で区切った属性の読み方（属性の間に空白の無い表の整形を GitHub で描いて見つけた）
+- 採らなかった:
+  - 閉じない引用符のタグが文書の終わりまで続くと、リンク先の違う描画を同じ値にする・タグは出る（emit）、という指摘（Grok・Antigravity）: `X<a href="https://example.com/a   b` の body は `X` だけで、a 要素は無かった。
+    仕様の Attribute value (double-quoted) state の EOF も、終わりの印だけを出す。描画は両方とも同じで、文字として比べるのは厳しい側
+  - タグとして読む側で xmp・plaintext を空白を保つ要素から外す（Grok）: タグとして読む側は、noscript の中を HTML として読む場合も表す。外すと `<noscript><xmp>a   b</xmp></noscript>` と `a b` が同じ値に戻る（前の版の穴）。
+    そのため、`<xmp><!--</xmp>-->  a  b` と `<xmp><!--</xmp>--> a b` は、前の版の「同じ値」から「別の値」になった（厳しい側）
+  - `xml:space="default"` も数える（Antigravity）: 厳しい側。値は実体参照でも書ける
+  - `</>`・引用符の中の CR・NUL・listing などをブロック要素に足すこと・`<img src="a.png" / >`（Grok・Antigravity）: どれも厳しい側か、前の版と同じ
+  - CRLF の文書の複数行のコメントを拒む（Antigravity）: 前の版もこの版も CRLF のまま整形し、描画の比べも通った
+  - CDATA の中のタグに似た文字で、対の候補作りが整形を見送る（Antigravity）: 拒む側で、描画の比べが守る
+  - `htmlTagParts` の null の守り（Antigravity）: 呼び出し元はタグの片だけを渡す
+  - 垂直タブ（U+000B）を CommonMark の形の空白に入れる（Antigravity の 3 回目）: WHATWG では垂直タブはタグの中の区切りでなく、入れなければ原文のまま比べる側（厳しい側）になるだけ
+
+### 速さ
+
+上の節と同じ測り方（Windows。`bench/bench.mjs`、中央値。小さい文書は 10 回、ほかは 5 回）。同じ PC でほかの作業も動いていたので、上の節より全体に遅い。前の版とこの版は交互に動かした。
+
+| 文書 | 前の版 | この版 |
+| --- | ---: | ---: |
+| 1 行 | 393 ms | 361 ms |
+| README 273 行 | 452 ms | 460 ms |
+| `excel-check.md` 44 行 | 533 ms | 529 ms |
+| 15,092 行 | 9,148 ms | 9,016 ms |
+| `<div><p>…</p></div>` のブロックが 1,500 個並ぶ 2,999 行 | 1,099 ms | 1,141 ms |
+| 属性の多いセルが 300 個ある 1 行の表（ふつうの書き方。出力は前の版と同じ） | 757 ms | 821 ms |
+| 同じ表の属性を `title="t0"data-x=y` と `<a href="u0"/title=v>` にしたもの（どちらの版も変えない） | 588 ms | 630 ms |
+
+- 増えた分は、タグごとに属性を読み、CommonMark の形かを確かめること
+
+### この検証で未検証のこと・残る穴
+
+- GitHub の HTML の読み方は、上の形のほかは調べていない。CommonMark の形のタグは WHATWG と同じに読むと見なしている
+- svg・math の中の CDATA は、比べ方では 2 つの読み方で比べるが、対や字下げの候補作りは HTML の中の読み方だけで行う（整形を見送る側）
+- `<style>` の規則や class で white-space を変える HTML は見分けない
+- 上の節の残る穴のうち、script の escaped などの状態を HTML のブロックをまたいで持ち越さないことは、この版でも残る（文書全体の描画の比べで見分ける）
+- Neovim の保存の整形そのもの
+- abiko-pi での速さ

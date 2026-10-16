@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { formatMarkdown, htmlInternals } from "../format.mjs";
 
@@ -14,6 +14,7 @@ const formatterPath = path.join(packageDir, "format.mjs");
 const runtimeDir = process.env.GLFM_FORMAT_RUNTIME_DIR || packageDir;
 const runtimeRequire = createRequire(path.join(runtimeDir, "package.json"));
 const { markdownToHTML } = runtimeRequire("comrak");
+const { decodeHTML, decodeHTMLAttribute } = await import(pathToFileURL(runtimeRequire.resolve("entities")));
 const renderOptions = {
   extension: {
     descriptionLists: true, table: true, strikethrough: true, autolink: true, tasklist: true, footnotes: true,
@@ -229,6 +230,9 @@ test("Markdown をはさむ div と祖先の details をそろえ、summary は 
   const input = lines("<details><summary>概要</summary><div>", "", "本文 **太字**", "", "</div></details>");
   const expected = lines("<details>", "  <summary>概要</summary>", "<div>", "", "本文 **太字**", "", "</div>", "</details>");
   await assertFormats(options, input, expected, "details の中の div");
+  const slashClosing = lines("<details>", "<summary>概要</summary><div>", "", "本文", "", "</div/>", "</details>");
+  // 積み上げでは閉じタグとして読むが、CommonMark の形でないタグは原文のまま比べ、書き換えを当てない。
+  await assertFormats(options, slashClosing, slashClosing, "CommonMark の形でない閉じタグを含むまとまりは保つ");
 });
 
 test("続くまとまりと、1 ブロックで閉じる HTML は、それぞれの決まりで整形する", async (t) => {
@@ -469,17 +473,40 @@ test("生の文字の中のタグは、まとまりの対や字下げの要素�
     "xmp の 2 行目の字下げは変えない");
 });
 
+test("空白をそのまま描く要素の中を保ち、外の要素を字下げする", async (t) => {
+  const options = await project(t);
+  await assertFormats(options,
+    lines("<div><listing>a   b</listing></div>"),
+    lines("<div>", "  <listing>a   b</listing>", "</div>"), "listing の中の空白は変えない");
+  await assertFormats(options,
+    lines("<div><xmp>", "<div><p>本文</p></div>", "</xmp></div>"),
+    lines("<div>", "  <xmp>", "<div><p>本文</p></div>", "</xmp>", "</div>"), "xmp の中の文字を保って外を字下げする");
+});
+
 test("生の文字や空要素でない要素の空白を変える整形は当てない", async (t) => {
   const options = await project(t);
   const unchanged = [
     ["xmp の中のタグに似た文字", lines("<xmp>", "<div><p>本文</p></div>", "</xmp>")],
-    ["div の中の xmp の文字", lines("<div><xmp>", "<div><p>本文</p></div>", "</xmp></div>")],
+    ["listing の中のタグを字下げしない", lines("<listing>", "<b>a</b>   <i>b</i>", "</listing>")],
+    ["div の中の plaintext の文字", lines("<div><plaintext>", "<div><p>本文</p></div>", "</plaintext></div>")],
+    ["区切りの / の後の xmp", lines('<div style="white-space: pre"><xmp/foo></div></xmp>hello   world</div>')],
+    ["区切りの / の後の script", lines('<div style="white-space: pre"><script/foo></div></script>hello   world</div>')],
+    ["引用符の無い属性の値の末尾の /", lines("<div><p><img src=a.png/></p></div>")],
     ["iframe の中の閉じタグに似た文字", lines('<div style="white-space: pre"><iframe></div></iframe>hello   world</div>')],
     ["span の / は空要素にしない", lines('<div><span style="white-space: pre"/>a   b</span></div>')],
     ["noscript の中の white-space", lines("<noscript>", '<div style="white-space: pre">a   b</div>', "</noscript>")],
     ["noscript の中のタグが後ろの空白の扱いを変える", lines('<div><noscript><b style="white-space: pre"></noscript>a   b</div>')],
   ];
   for (const [name, input] of unchanged) await assertFormats(options, input, input, name);
+});
+
+test("CommonMark の形でない属性のタグは、HTML とセルの整形でも原文を保つ", async (t) => {
+  const options = await project(t);
+  const link = lines('<div><p><a href="u0"/title="v">x</a></p></div>');
+  await assertFormats(options, link, link, "引用符の直後の / で区切った属性");
+  const cell = lines('<table><tr><td class=c0 title="t0"data-x=y><img src=a0.png alt=x><a href="u0"/title=v>リンク</a></td></tr></table>');
+  await assertFormats({ ...options, fixes: { ...options.fixes, html_cells: true } }, cell, cell,
+    "CommonMark の形でないセルとリンクを既定の分類でも保つ");
 });
 
 test("空要素の white-space は後ろの HTML の整形を止めない", async (t) => {
@@ -527,8 +554,28 @@ test("HTML のブロックの無い文書と整形済みの文書は描画しな
   assert.ok(stats.parses <= 1, `HTML の行の無い文書は解析を増やさない: ${JSON.stringify(stats)}`);
 });
 
+test("HTML の属性の名前と値に含まれる記号でも、生の文字の要素を見分ける", () => {
+  const openings = [
+    "<xmp =b>", '<xmp "b>', "<xmp 'b>", "<xmp <b>", "<xmp a=b`c>",
+    '<xmp a=b"c>', "<xmp a=b'c>", "<xmp a=b<c>", "<xmp a=b=c>", "<xmp a`b>",
+  ];
+  for (const opening of openings) {
+    const before = '<div style="white-space: pre">' + opening + "</div></xmp>hello   world</div>";
+    const after = before.replace("hello   world", "hello world");
+    assert.notEqual(normalizedHtml(before), normalizedHtml(after), opening + ": 生の文字の中の閉じタグを読まない");
+  }
+});
+
 test("描画の比較の正規化", () => {
   const same = [
+    ["<br/>", "<br />"],
+    ["<a x=/ >", "<a x=/>"],
+    ['<div\u00a0style="white-space: pre">a   b</div>', '<div\u00a0style="white-space: pre">a b</div>'],
+    ["<pre\u00a0x>a   b</pre\u00a0x>", "<pre\u00a0x>a b</pre\u00a0x>"],
+    ['<div ſtyle="white-space: pre">a   b</div>', '<div ſtyle="white-space: pre">a b</div>'],
+    ["<p>a<!-- x --!>  b <!-- y --></p>", "<p>a<!-- x --!> b <!-- y --></p>"],
+    ["<p><!--->  a<!-- --></p>", "<p><!---> a<!-- --></p>"],
+    ["<p>a<!-->  b</p>", "<p>a<!--> b</p>"],
     ["<div><p>x</p></div>", "<div>\n  <p>x</p>\n</div>"],
     ["<table><td> a </td></table>", "<table><td>a</td></table>"],
     ["<p>a\n  b</p>", "<p>a b</p>"],
@@ -543,11 +590,42 @@ test("描画の比較の正規化", () => {
     // 二重のエスケープも --> で終わり、その後の閉じタグで script と div を閉じる。
     ['<div style="white-space: pre"><script><!--<script>--></script></div>a   b',
       '<div style="white-space: pre"><script><!--<script>--></script></div>a b'],
-    // コメントに似た文字があっても xmp は閉じ、後ろの通常の文字の空白を畳む。
-    ["<xmp><!--</xmp>-->  a  b", "<xmp><!--</xmp>--> a b"],
   ];
   for (const [a, b] of same) assert.equal(normalizedHtml(a), normalizedHtml(b), `${a} と ${b} は同じ描画`);
   const different = [
+    // GitHub は / で区切った属性を落とすなど、WHATWG と違う読み方をするので、CommonMark の形でないタグは原文のまま比べる。
+    ["<a x= >", "<a x=>"],
+    ["<a ==x>", "<a = = x>"],
+    ["<xmp/foo>a</xmp>", "<xmp /foo>a</xmp>"],
+    ['<a title="x"href="y">z</a>', '<a title="x" href="y">z</a>'],
+    ['<x_y title = "x">z</x_y>', '<x_y title="x">z</x_y>'],
+    ['<div.x title = "x">z</div.x>', '<div.x title="x">z</div.x>'],
+    ['<div><p><a/href="u0">x</a></p></div>', '<div><p><a /href="u0">x</a></p></div>'],
+    ['<div><p><a href="u0"/title="v">x</a></p></div>', '<div><p><a href="u0" title="v">x</a></p></div>'],
+    ["a <div/x> b", "a<div/x>b"],
+    ["<div>a</div/> b", "<div>a</div /> b"],
+    // 原文を読む側では xmp が閉じても、タグとして読む側ではコメントの中で閉じず、後ろの空白の差を残す。
+    ["<xmp><!--</xmp>-->  a  b", "<xmp><!--</xmp>--> a b"],
+    ["<div><listing>a   b</listing></div>", "<div><listing>a b</listing></div>"],
+    ["<listing>\n<b>a</b>   <i>b</i>\n</listing>", "<listing>\n  <b>a</b> <i>b</i>\n</listing>"],
+    ['<div style="white-space: pre"><xmp/foo></div></xmp>hello   world</div>',
+      '<div style="white-space: pre"><xmp/foo></div></xmp>hello world</div>'],
+    ['<div style="white-space: pre"><script/foo></div></script>hello   world</div>',
+      '<div style="white-space: pre"><script/foo></div></script>hello world</div>'],
+    ['<div style="white-space: pre"><xmp a="b"c></div></xmp>hello   world</div>',
+      '<div style="white-space: pre"><xmp a="b"c></div></xmp>hello world</div>'],
+    ['<div/style="white-space: pre">a   b</div>', '<div/style="white-space: pre">a b</div>'],
+    ['<div title="x"style="white-space: pre">a   b</div>', '<div title="x"style="white-space: pre">a b</div>'],
+    ['<div style="white&#45;space: pre">a   b</div>', '<div style="white&#45;space: pre">a b</div>'],
+    ["<p>a</ <div> b</p>", "<p>a</ <div>b</p>"],
+    ["<p>a<?x <div> b</p>", "<p>a<?x <div>b</p>"],
+    ["<img src=a.png/>", "<img src=a.png />"],
+    ["<a =b>x</a>", "<a=b>x</a>"],
+    ["<a title=x\u00a0y>z</a>", "<a title=x y>z</a>"],
+    ["<bloc\u212aquote>a</bloc\u212aquote> b", "<bloc\u212aquote>a</bloc\u212aquote>b"],
+    ["<!-- x <div>a  b", "<!-- x <div>a b"],
+    ["<!x a  b", "<!x a b"],
+    ["<?x a  b", "<?x a b"],
     ["<b>a</b><i>b</i>", "<b>a</b> <i>b</i>"],
     ["<pre>  x</pre>", "<pre>x</pre>"],
     ["<code>a  b</code>", "<code>a b</code>"],
@@ -580,7 +658,7 @@ test("描画の比較の正規化", () => {
     ['<span style="white-space: pre"><span/>x</span>a   b</span>',
       '<span style="white-space: pre"><span/>x</span>a b</span>'],
     ["<xmp>a</xmp\u00a0>  b</xmp>", "<xmp>a</xmp\u00a0> b</xmp>"],
-    // noscript (\u30b9\u30af\u30ea\u30d7\u30c8\u3092\u5207\u3063\u305f\u3068\u304d) \u3068\u3001svg\u30fbmath \u306e\u4e2d\u306e\u540c\u3058\u540d\u524d\u306e\u8981\u7d20\u3067\u306f\u3001\u4e2d\u306e\u30bf\u30b0\u3082\u8981\u7d20\u306b\u306a\u308b\u3002
+    // noscript (スクリプトを切ったとき) と、svg・math の中の同じ名前の要素では、中のタグも要素になる。
     ['<noscript><div style="white-space: pre">a   b</div></noscript>',
       '<noscript><div style="white-space: pre">a b</div></noscript>'],
     ['<svg><title></svg><div style="white-space: pre">a   b</div></title></svg>',
@@ -595,4 +673,62 @@ test("描画の比較の正規化", () => {
       '<math></svg><link style="white-space: pre">a b</link></math>'],
   ];
   for (const [a, b] of different) assert.notEqual(normalizedHtml(a), normalizedHtml(b), `${a} と ${b} は別の描画`);
+});
+
+test("CDATA と xml:space と noscript の中でも、空白の差を見分ける", () => {
+  const semantic = { decodeHTML, decodeHTMLAttribute };
+  const normalizers = [normalizedHtml, (html) => normalizedHtml(html, undefined, 0, null, semantic)];
+  const different = [
+    ["<svg><text><![CDATA[<span>a   b</span> > c]]></text></svg>",
+      "<svg><text><![CDATA[<span>a b</span> > c]]></text></svg>"],
+    ["<math><mtext><![CDATA[a > b   c]]></mtext></math>", "<math><mtext><![CDATA[a > b c]]></mtext></math>"],
+    ['<svg><text xml:space="preserve">a   b</text></svg>', '<svg><text xml:space="preserve">a b</text></svg>'],
+    ["<noscript><xmp>a   b</xmp></noscript>", "<noscript><xmp>a b</xmp></noscript>"],
+    // HTML の中では宣言が最初の > で終わり、その後の pre は空白をそのまま描く。
+    ["<![CDATA[ > <pre> ]]>a   b</pre>", "<![CDATA[ > <pre> ]]>a b</pre>"],
+    ["<svg><text><![CDATA[a > b   c", "<svg><text><![CDATA[a > b c"],
+  ];
+  const same = [
+    ["<div><p>x</p></div><svg><text><![CDATA[a > b]]></text></svg>",
+      "<div>\n  <p>x</p>\n</div><svg><text><![CDATA[a > b]]></text></svg>"],
+    // 最初の ]]> で CDATA が終わり、その後の通常の文字は空白を畳む。
+    ["<svg><text><![CDATA[a > b]]>c   d</text></svg>", "<svg><text><![CDATA[a > b]]>c d</text></svg>"],
+  ];
+  for (const normalize of normalizers) {
+    for (const [a, b] of different) assert.notEqual(normalize(a), normalize(b), a + " と " + b + " の差を残す");
+    for (const [a, b] of same) assert.equal(normalize(a), normalize(b), a + " と " + b + " は同じ値");
+  }
+});
+
+test("セルの描画の比較でも、HTML と同じ区切りで属性を読む", () => {
+  const semantic = { decodeHTML, decodeHTMLAttribute };
+  const normalized = (html) => normalizedHtml(html, undefined, 0, null, semantic);
+  const same = [
+    ["<a title=x\u00a0y>z</a>", '<a title="x\u00a0y">z</a>'],
+  ];
+  for (const [a, b] of same) assert.equal(normalized(a), normalized(b), a + " と " + b + " は同じ属性");
+  const different = [
+    // 閉じタグも CommonMark の形を満たすときだけ、裸の URL と同じリンクとして扱う。
+    ['<a href="https://example.com">https://example.com</a\u00a0>',
+      '<a href="https://example.com">https://example.com</a>'],
+    // GitHub は / で区切った属性を落とすなど、WHATWG と違う読み方をするので、CommonMark の形でないタグは原文のまま比べる。
+    ['<a/href="x">z</a>', '<a href="x">z</a>'],
+    ['<a title="x"HREF="y">z</a>', '<a href="y" title="x">z</a>'],
+    ['<a/HREF="x" href="y">z</a>', '<a href="x">z</a>'],
+    ['<X_Y TITLE="x">z</X_Y>', '<x_y title="x">z</x_y>'],
+    ['<a =b>x</a>', '<a =b="">x</a>'],
+    ['<div><p><a/href="u0">x</a></p></div>', '<div><p><a /href="u0">x</a></p></div>'],
+    ['<div><p><a href="u0"/title="v">x</a></p></div>', '<div><p><a href="u0" title="v">x</a></p></div>'],
+    ["a <div/x> b", "a<div/x>b"],
+    ["<div>a</div/> b", "<div>a</div /> b"],
+    ['<a/href="x">z</a>', '<a/href="y">z</a>'],
+    ['<a title="x"href="y">z</a>', '<a title="x"href="z">z</a>'],
+    ['<a/HREF="x" href="y">z</a>', '<a href="y">z</a>'],
+    ["<img src=a.png/>", "<img src=a.png />"],
+    ["<a =b>x</a>", "<a=b>x</a>"],
+    ["<a title=x\u00a0y>z</a>", "<a title=x y>z</a>"],
+    ["<bloc\u212aquote>x</bloc\u212aquote>", "<blockquote>x</blockquote>"],
+    ['<a data-\u212a="x">z</a>', '<a data-k="x">z</a>'],
+  ];
+  for (const [a, b] of different) assert.notEqual(normalized(a), normalized(b), a + " と " + b + " は別の属性か名前");
 });

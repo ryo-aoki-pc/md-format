@@ -19,7 +19,8 @@ const parserOptions = {
 };
 
 // 中の空白がそのまま描画に出る要素。
-const whitespaceElements = Object.freeze(["pre", "textarea", "script", "style", "code", "kbd", "samp"]);
+// listing・xmp・plaintext は、ブラウザの既定のスタイルが white-space: pre になる。
+const whitespaceElements = Object.freeze(["pre", "textarea", "script", "style", "code", "kbd", "samp", "listing", "xmp", "plaintext"]);
 // 前後の空白が描画に出ない要素。
 const blockElements = new Set([
   "address", "article", "aside", "blockquote", "body", "br", "caption", "center", "col", "colgroup", "dd", "details",
