@@ -1026,6 +1026,8 @@ const htmlTokens = new RegExp([
   String.raw`<!--[\s\S]*?-->`, String.raw`<![^>]*>`, String.raw`<\?[\s\S]*?\?>`,
   String.raw`<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>\x60]+))?)*\s*\/?>`,
 ].join("|"), "gu");
+const htmlPieceTokens = new RegExp(htmlTokens);
+const htmlTokenAt = new RegExp(htmlTokens.source, "uy");
 
 // 表の部品。HTML の解析は、table の外のこれらのタグを捨てる。
 const tableParts = new Set(["caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr"]);
@@ -1040,9 +1042,82 @@ function normalizedTag(token) {
 
 // 生の文字として読む要素の中の <table> は、表の深さに数えない。
 const rawTextElements = new Set(["script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes", "noscript", "plaintext"]);
+// 生の文字の要素のうち、中の空白をそのまま描くもの。
+const rawTextWhitespace = new Set(["xmp", "plaintext", "textarea"]);
+// 生の文字の要素の開きタグがありうる文字列 (広めに当たっても、比べ方が厳しくなるだけ)。
+const rawTextHint = new RegExp("<(?:" + [...rawTextElements].join("|") + String.raw`)(?=[\s/>])`, "iu");
+// 閉じタグの名前の後は、HTML の ASCII の空白か /・> だけを認める。plaintext は閉じない。
+const rawTextClosings = new Map([...rawTextElements].filter((name) => name !== "script" && name !== "plaintext")
+  .map((name) => [name, new RegExp(`</${name}(?=[\\t\\n\\f\\r />])`, "gi")]));
+const scriptTextTokens = {
+  data: /<!--|<\/script(?=[\t\n\f\r />])/gi,
+  escaped: /-->|<\/?script(?=[\t\n\f\r />])/gi,
+  double: /-->|<\/script(?=[\t\n\f\r />])/gi,
+};
 function htmlRawText(raw, name, closing) {
   if (raw) return raw !== "plaintext" && closing && name === raw ? null : raw;
   return !closing && rawTextElements.has(name) ? name : null;
+}
+
+// script data・escaped・double escaped の状態を追い、実際に閉じるタグの位置を返す。
+function scriptClosing(html, start) {
+  let state = "data";
+  let last = start;
+  while (last < html.length) {
+    const tokens = scriptTextTokens[state];
+    tokens.lastIndex = last;
+    const match = tokens.exec(html);
+    if (!match) return null;
+    const token = match[0];
+    last = tokens.lastIndex;
+    if (token === "<!--") {
+      state = "escaped";
+      // escaped dash dash から始め、<!-->・<!---> に重なる --> も読む。
+      last = match.index + 2;
+    } else if (token === "-->") state = "data";
+    else if (token[1] !== "/") state = "double";
+    else if (state === "double") state = "escaped";
+    else return match;
+  }
+  return null;
+}
+
+// HTML を、タグ・コメント・宣言 ({token}) と文字 ({text}) に分ける。各片の raw は、読んだときに開いている生の文字の要素。
+// 生の文字の中は、同じ名前の閉じタグまでを 1 つの文字として読む (中のタグやコメントに似た文字を読まない)。
+// tagsInRaw なら、生の文字の中もタグとして読む。raw は、前の断片から開いている生の文字の要素で、終わりの状態も返す。
+// script の escaped などは断片をまたいで持ち越さず、文書全体を読む描画の比べで守る。
+function htmlPieces(html, raw = null, tagsInRaw = false) {
+  const pieces = [];
+  let last = 0;
+  while (last < html.length) {
+    let match;
+    if (raw && !tagsInRaw) {
+      let end;
+      if (raw === "script") end = scriptClosing(html, last);
+      else {
+        const closing = rawTextClosings.get(raw);
+        if (closing) {
+          closing.lastIndex = last;
+          end = closing.exec(html);
+        }
+      }
+      // 閉じ候補をタグとして読めなければ、残りをすべて生の文字にする。
+      htmlTokenAt.lastIndex = end?.index ?? html.length;
+      match = end && htmlTokenAt.exec(html);
+    } else {
+      htmlPieceTokens.lastIndex = last;
+      match = htmlPieceTokens.exec(html);
+    }
+    const until = match ? match.index : html.length;
+    if (until > last) pieces.push({ text: html.slice(last, until), raw });
+    if (!match) break;
+    const token = match[0];
+    pieces.push({ token, raw });
+    last = match.index + token.length;
+    const tag = htmlTag(token);
+    if (tag) raw = htmlRawText(raw, tag.name, tag.closing);
+  }
+  return { pieces, raw };
 }
 
 // 空白をそのまま出す要素。正規化と、まとまりの字下げの調整で同じ条件を使う。
@@ -1057,20 +1132,36 @@ function htmlWhitespaceElement(name, token, flavor) {
 //    ただし、HTML の解析で捨てられるタグ (表の外の td・tr などの表の部品と、</hr> のような空要素の閉じタグ) は、
 //    ブロック要素でも空白の境にしない (タグが消えて、前後の文字と空白がそのまま並ぶ)
 // 3. インライン要素どうしの間の空白は有無を残す (<b>a</b><i>b</i> と <b>a</b> <i>b</i> は別の値)。コメントは原文のまま
+// 4. 生の文字の要素 (rawTextElements) の中はタグとして読まず、xmp・plaintext・textarea の中の空白は原文のまま
+// 5. ただし、noscript (スクリプトを切ったブラウザや、GitHub・GitLab の消毒) と、SVG・MathML の中の同じ名前の要素では、
+//    中のタグも要素になる。生の文字の要素があれば、中もタグとして読む値も作り、両方を比べる (どちらかで違えば別の値)
+// 6. 空要素は style に white-space を書いても中が無いので、空白をそのまま出す要素に数えない (svg・math の中を除く)。
+//    空要素でない要素は /> でも開く (HTML の要素の / は無視される。svg・math の中で閉じるものを開くと数えても、厳しくなるだけ)
 function normalizedHtml(html, flavor = flavors.glfm, tables = 0, raw = null) {
+  const text = normalizedHtmlValue(html, flavor, tables, raw, false);
+  if (raw === null && !rawTextHint.test(html)) return text;
+  return JSON.stringify([text, normalizedHtmlValue(html, flavor, tables, raw, true)]);
+}
+
+// 文字とタグの正規化は、どちらの読み方でも同じ手順で行う。
+function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw) {
   const { blockElements } = flavor;
   const items = [];
   // tables は、前の断片から開いている table の数。表の部品は、table の中でだけ空白の境にする。
   // 空白がそのまま出る要素の、開いているものの名前と、同じ名前の入れ子の深さ。
   const exact = [];
-  let last = 0;
+  // 開いている svg・math の名前 (広めに数える)。その中では、空要素の名前の要素も中を持ちうる。
+  // 閉じタグは一番内側と同じ名前のときだけ外す (<math></svg> は math を閉じない)。
+  const foreign = [];
   const pushText = (text) => {
     if (text) items.push(exact.length ? ["raw", text] : ["text", text.replace(/[ \t\n\f\r]+/gu, " ")]);
   };
-  for (const match of html.matchAll(htmlTokens)) {
-    pushText(html.slice(last, match.index));
-    last = match.index + match[0].length;
-    const token = match[0];
+  for (const { token, text, raw: rawText } of htmlPieces(html, raw, tagsInRaw).pieces) {
+    if (token === undefined) {
+      if (!tagsInRaw && rawTextWhitespace.has(rawText)) items.push(["raw", text]);
+      else pushText(text);
+      continue;
+    }
     if (token.startsWith("<!") || token.startsWith("<?")) {
       items.push(["markup", token]);
       continue;
@@ -1080,19 +1171,22 @@ function normalizedHtml(html, flavor = flavors.glfm, tables = 0, raw = null) {
     // </br> は <br> と読まれるので、境のままにする。
     const dropped = (tableParts.has(lower) && !tables) || (slash && voidElements.has(lower) && lower !== "br");
     items.push(["tag", normalizedTag(token), blockElements.has(lower) && !dropped]);
-    if (lower === "table" && !raw) tables = Math.max(0, tables + (slash ? -1 : 1));
-    raw = htmlRawText(raw, lower, Boolean(slash));
+    if (lower === "table" && !rawText) tables = Math.max(0, tables + (slash ? -1 : 1));
+    if (lower === "svg" || lower === "math") {
+      if (!slash) foreign.push(lower);
+      else if (foreign.at(-1) === lower) foreign.pop();
+    }
     const open = exact.at(-1);
     if (slash) {
       if (open?.name === lower && --open.depth === 0) exact.pop();
-    } else if (!token.endsWith("/>")) {
+    } else if (!voidElements.has(lower) || foreign.length) {
+      // 空要素でない HTML の要素は、/> でも開く。
       if (open?.name === lower) open.depth++;
       else if (htmlWhitespaceElement(lower, token, flavor)) {
         exact.push({ name: lower, depth: 1 });
       }
     }
   }
-  pushText(html.slice(last));
   const result = [];
   items.forEach((item, index) => {
     if (item[0] !== "text") {
@@ -1183,7 +1277,8 @@ function htmlGroupPaths(fragments, flavor) {
           info.path = path;
           info.tag = true;
         }
-        // 空白をそのまま出す要素の、同じ名前の入れ子の深さも追う (normalizedHtml と同じ)。
+        // 同じ名前の入れ子の深さも追うが、normalizedHtml と違い /> の要素は積まない。
+        // 字下げの候補を減らすだけで、描画は全文の比べが守る。
         const open = exact.at(-1);
         if (closing) {
           if (open?.name === name && --open.depth === 0) exact.pop();
@@ -1408,12 +1503,13 @@ function formatHtmlBlocks(source, { parse, render, beautify, selection, exhausti
     const mapped = children.map((child) => {
       const result = htmlTree(child, depth, rawText);
       if (child[0] === "HtmlBlock" && (child[1].block_type === 6 || child[1].block_type === 7)) {
-        for (const match of child[1].literal.matchAll(htmlTokens)) {
-          const tag = htmlTag(match[0]);
-          if (!tag) continue;
-          if (tag.name === "table" && !tag.empty && !rawText) depth = Math.max(0, depth + (tag.closing ? -1 : 1));
-          rawText = htmlRawText(rawText, tag.name, tag.closing);
+        const { pieces, raw: nextRaw } = htmlPieces(child[1].literal, rawText);
+        for (const { token } of pieces) {
+          if (token === undefined) continue;
+          const tag = htmlTag(token);
+          if (tag?.name === "table" && !tag.empty) depth = Math.max(0, depth + (tag.closing ? -1 : 1));
         }
+        rawText = nextRaw;
       }
       return result;
     });

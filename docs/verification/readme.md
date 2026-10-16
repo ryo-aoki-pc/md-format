@@ -324,3 +324,87 @@ GitHub の Markdown API（`POST /markdown`。gh 2.102.0 の認証）で、送っ
 
 - Neovim の保存の整形そのもの。LazyVimStarter の試験（`tests/md_format_conform.lua`）の入力は、CLI で前の版と同じ出力だった
 - abiko-pi での速さ
+
+## 生の文字の要素と空要素の比べ方の検証（2026-10-16）
+
+対象は、`da73315` に、HTML の描画の比べ方（`normalizedHtml`）で生の文字の要素の中をタグとして読まないようにし、空要素の `white-space` の扱いを直した版（この節を足したコミット）。比べる前の版は `da73315`。
+
+### 直した穴
+
+前の版は、次の形で描画の変わる整形を当てていた（どれも試験用に作った文書で確かめた）。
+
+- `<xmp>` の中の `<div><p>本文</p></div>` を、タグとして字下げした。xmp は中の文字を空白ごとそのまま描く
+- `<div style="white-space: pre"><iframe></div></iframe>hello   world</div>` の `hello   world` を `hello world` に詰めた。iframe の中の偽の `</div>` で、空白をそのまま出す要素の追跡が外れていた
+- `<div><pre/>a   b</pre></div>` と `<span style="white-space: pre"/>a   b</span>` の `a   b` を詰めた。HTML では、空要素でない要素の `/` は無視され、要素は開く
+- `<img src="a.png" style="white-space: pre">` のような空要素の `white-space` で、後ろのすべての HTML のブロックの整形を拒んでいた（厳しすぎる側）
+
+この版の読み方:
+
+- 生の文字の要素（script・style・textarea・title・xmp・iframe・noembed・noframes・noscript・plaintext）の中は、対応する閉じタグまでを文字として読む。閉じタグは、名前の直後が ASCII の空白・`/`・`>` のときだけ。script は、HTML の escaped・double escaped の状態も追う。plaintext は閉じない。xmp・plaintext・textarea の中の空白は原文のまま比べる
+- noscript と、svg・math の中の同じ名前の要素では、中のタグも要素になる。そのため、生の文字の要素がある HTML は、前の版と同じくタグとして読む値も作り、両方で比べる。生の文字としてだけ読むと、前の版が拒んでいた `<noscript>` の中の `<div style="white-space: pre">a   b</div>` を詰める整形を当てた
+- 空要素は `white-space` を書いても空白をそのまま出す要素に数えない（svg・math の中を除く）。空要素でない要素は `/>` でも開くと数える
+
+### 環境
+
+- Windows 11 Pro 10.0.26300、Node.js 26.10.0
+- abiko-pi: Raspberry Pi 5 の AlmaLinux 10.2（aarch64）、Node.js 22.23.2
+- 依存は `package-lock.json` のまま（comrak 0.48.0-rc.0・markdownlint-cli2 0.23.3・js-beautify 2.0.3）
+- 文書の集まりは、上の節と同じ 225 本
+- GitHub の描画は Markdown API（`gh api markdown`、`mode=markdown`）、GitLab の描画は gitlab.com の Markdown API（`gfm: true`）。送ったのは試験用に作った文書だけ
+
+### 自動テスト
+
+- Windows: `npm test` の 241 件のうち 240 件が成功し、1 件を飛ばした
+- abiko-pi: 241 件のうち 240 件が成功し、1 件を飛ばした
+- どちらも、全 `.mjs` の `node --check` と `git diff --check` が通った
+- この版の `test/html.test.mjs` を前の版の `format.mjs` にかけると、35 件のうち 5 件が落ちた（足した試験が、直した穴を見分ける）
+
+### 前の版と出力を比べる
+
+`da73315` の `format.mjs` と、この版の `format.mjs` を、同じ依存（`--runtime-dir`）で文書の集まりの 225 本に 1 本ずつ別のプロセスでかけ、標準出力と成否を比べた（既定の分類）。
+
+- GLFM: 同じ 225 本、違う 0 本。誤り 0
+- GFM（`--flavor gfm`）: 同じ 225 本、違う 0 本。誤り 0
+- 変わらないのは、225 本を Comrak で描いた HTML（GLFM と GFM の設定）に、生の文字の要素の開きタグ・`white-space` を書いた style・空要素でない要素の `/>` が 1 つも無いため。文書の中の `<script>` などは、どれもコードの中にある
+
+### 試験用の文書で確かめた形
+
+- 上の「直した穴」の形は、どれも変えない（GLFM・GFM）。空要素の `white-space` の後ろのブロックは整形し、2 回目の整形で変わらない
+- `<pre>` の中の `<xmp><!--</xmp>-->`（コメントに似た文字が閉じタグを隠さない）、`</xmp >`（閉じタグにならない）、引用が閉じない属性の閉じタグ（残りを生の文字にする）、
+  script の二重のエスケープ（`<script><!--<script></script></div></script>` の中の `</div>` は文字）、svg・math の中の `<title>`・`<textarea>`・`<link>`、
+  `<math></svg>`（違う名前の閉じタグは math を閉じない）を試験に足した。script の二重のエスケープと `<math></svg>` は、レビューで見つかった形
+- 説明リスト・番号付きリストの中の表（1 行の表と、Markdown のセルをはさむ表の 30 通り）は、前の版と同じ出力
+
+### 描画の比べ（GitHub・GitLab）
+
+上の穴の形を並べた文書を、前の版で整形したものと元の文書を描いた。
+
+- GitLab: xmp のタグを消して中を文字として描くので、前の版の字下げが文字の間の空白として見えた。`<pre/>` を開いた `<pre>` として描くので、`a   b` が `a b` になった。iframe・span の形は、style を消すので見えなかった
+- GitHub: xmp と iframe はタグをエスケープし、`<pre/>` は閉じた `<pre></pre>` として描き、style を消すので、どれも見えなかった
+- この版は、これらの形を変えない
+- noscript: GitHub・GitLab とも、noscript のタグを消して中を HTML として描いた（GitLab は `</noscript>` の後ろの文字を `<b>` で包み直した）。タグとして読む値も比べる理由
+- 空要素の `white-space` の後ろのブロックを整形した文書: GitHub（GFM）・GitLab（GLFM）とも、描画に出ない空白の違いを除いて、整形の前と同じ
+
+### 速さ
+
+上の節と同じ測り方（Windows。中央値）。
+
+| 文書（回数） | 前の版 | この版 |
+| --- | ---: | ---: |
+| 1 行（10 回） | 231 ms | 237 ms |
+| README 248 行（10 回） | 281 ms | 282 ms |
+| `excel-check.md` 44 行（10 回） | 327 ms | 331 ms |
+| 15,092 行（5 回） | 4,909 ms | 4,900 ms |
+| `<div><p>…</p></div>` のブロックが 1,500 個並ぶ 3,001 行（5 回） | 613 ms | 618 ms |
+| 同じ文書の先頭に `<textarea>` を足した 3,003 行（5 回） | 605 ms | 622 ms |
+
+- 最後の行は、生の文字の要素があり、文書全体の比べを 2 つの読み方で行う形
+
+### この検証で未検証のこと・残る穴
+
+- 次の 2 つは、前の版からある穴で、この版でも残る
+  - タグの名前の直後の `/` の後が `>` でない開きタグ（`<xmp/foo>` など）を、タグとして読まない（`htmlTokens` の読み方）
+  - `<listing>` を空白をそのまま描く要素に数えていない（`whitespaceElements`）。`<listing>a   b</listing>` を詰める整形を当てる
+- script の escaped などの状態は、HTML のブロックをまたいで持ち越さない（文書全体の描画の比べで見分ける）
+- Neovim の保存の整形そのもの
+- abiko-pi での速さ

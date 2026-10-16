@@ -399,9 +399,30 @@ test("HTML の正規化は開始時の表の深さを使い、生の文字の中
     const opening = "<" + name + '>"<table>"</' + name + ">";
     assert.notEqual(normalizedHtml(opening + "</td></tr>"), normalizedHtml(opening + "</td>\n</tr>"), name + ": 開きは数えない");
     const closing = "<" + name + '>"</table>"</' + name + ">";
-    assert.equal(normalizedHtml(closing + "</td></tr>", undefined, 1),
-      normalizedHtml(closing + "</td>\n</tr>", undefined, 1), name + ": 閉じも数えない");
+    // plaintext は閉じタグでも終わらないので、後ろの改行も生の文字として保つ。
+    if (name === "plaintext") {
+      assert.notEqual(normalizedHtml(closing + "</td></tr>", undefined, 1),
+        normalizedHtml(closing + "</td>\n</tr>", undefined, 1), "plaintext は閉じず、後ろの空白も保つ");
+    } else {
+      assert.equal(normalizedHtml(closing + "</td></tr>", undefined, 1),
+        normalizedHtml(closing + "</td>\n</tr>", undefined, 1), name + ": 閉じも数えない");
+    }
   }
+  assert.notEqual(normalizedHtml("a  b</xmp><p>x</p>", undefined, 0, "xmp"),
+    normalizedHtml("a b</xmp><p>x</p>", undefined, 0, "xmp"), "開始時の xmp の中の空白を保つ");
+  assert.equal(normalizedHtml("a</xmp><div><p>x</p></div>", undefined, 0, "xmp"),
+    normalizedHtml("a</xmp><div>\n  <p>x</p>\n</div>", undefined, 0, "xmp"), "開始時の xmp を閉じた後の字下げは畳む");
+});
+
+test("生の文字の閉じタグは ASCII の境と壊れていない形で見分ける", () => {
+  for (const tail of ["\t>", "\n>", "\f>", "\r>", " >", "/>", ">"]) {
+    assert.equal(normalizedHtml("<xmp>a</XmP" + tail + " a  b"),
+      normalizedHtml("<xmp>a</XmP" + tail + " a b"), "閉じタグの境: " + JSON.stringify(tail));
+  }
+  assert.equal(normalizedHtml('<xmp>a</xmp foo="bar">  b'),
+    normalizedHtml('<xmp>a</xmp foo="bar"> b'), "属性付きの閉じタグの後ろの空白は畳む");
+  assert.notEqual(normalizedHtml('<xmp>a</xmp foo="</xmp>  b'),
+    normalizedHtml('<xmp>a</xmp foo="</xmp> b'), "壊れた閉じタグの候補から文書の終わりまでを生の文字にする");
 });
 
 test("見送った未閉じの要素を閉じる後ろのブロックとまとまりは変えない", async (t) => {
@@ -441,11 +462,32 @@ test("生の文字の中のタグは、まとまりの対や字下げの要素�
   await assertFormats({ ...options, beautifyHtml }, plaintext, plaintext, "plaintext は閉じタグでも終わらない");
   const unclosedPlaintext = lines("<div><plaintext>", "", "本文", "", "<div><p>a</p></div>");
   await assertFormats(options, unclosedPlaintext, unclosedPlaintext, "生の文字の中の後続ブロックは単独でも変えない");
-  // xmp は空白をそのまま描くが、比べ方は中の空白の違いを見分けないので、生の文字の中で始まる行は字下げを変えない。
+  // htmlGroupPaths は生の文字の中で始まる行の字下げを変えず、比べ方も xmp の中の空白の違いを見分ける。
   await assertFormats(options,
     lines("<table><tr><td>", "", "本文", "", "</td><td><xmp>x", "        y</xmp></td></tr></table>"),
     lines("<table>", "<tr>", "<td>", "", "本文", "", "</td>", "<td>", "  <xmp>x", "        y</xmp>", "</td>", "</tr>", "</table>"),
     "xmp の 2 行目の字下げは変えない");
+});
+
+test("生の文字や空要素でない要素の空白を変える整形は当てない", async (t) => {
+  const options = await project(t);
+  const unchanged = [
+    ["xmp の中のタグに似た文字", lines("<xmp>", "<div><p>本文</p></div>", "</xmp>")],
+    ["div の中の xmp の文字", lines("<div><xmp>", "<div><p>本文</p></div>", "</xmp></div>")],
+    ["iframe の中の閉じタグに似た文字", lines('<div style="white-space: pre"><iframe></div></iframe>hello   world</div>')],
+    ["span の / は空要素にしない", lines('<div><span style="white-space: pre"/>a   b</span></div>')],
+    ["noscript の中の white-space", lines("<noscript>", '<div style="white-space: pre">a   b</div>', "</noscript>")],
+    ["noscript の中のタグが後ろの空白の扱いを変える", lines('<div><noscript><b style="white-space: pre"></noscript>a   b</div>')],
+  ];
+  for (const [name, input] of unchanged) await assertFormats(options, input, input, name);
+});
+
+test("空要素の white-space は後ろの HTML の整形を止めない", async (t) => {
+  const options = await project(t);
+  await assertFormats(options,
+    lines('<p><img src="a.png" style="white-space: pre"></p>', "", "<div><p>後ろ</p></div>"),
+    lines('<p><img src="a.png" style="white-space: pre"></p>', "", "<div>", "  <p>後ろ</p>", "</div>"),
+    "img の white-space の後ろのブロック");
 });
 
 test("外の table の文脈をリストの項目の HTML に渡して、描画を保って整形する", async (t) => {
@@ -494,12 +536,23 @@ test("描画の比較の正規化", () => {
     ['<td colspan = "2"  align="right" >x</td>', '<td colspan="2" align="right">x</td>'],
     ["<div><!-- c --><p>x</p></div>", "<div><!-- c -->\n  <p>x</p>\n</div>"],
     ["<details>\n<summary>概要</summary>\n", "<details>\n  <summary>概要</summary>\n"],
+    ['<img src="a.png" style="white-space: pre"><div><p>x</p></div>',
+      '<img src="a.png" style="white-space: pre"><div>\n  <p>x</p>\n</div>'],
+    ['<br style="white-space: pre"><p>a\n  b</p>', '<br style="white-space: pre"><p>a b</p>'],
+    ["<title>a  b</title>", "<title>a b</title>"],
+    // 二重のエスケープも --> で終わり、その後の閉じタグで script と div を閉じる。
+    ['<div style="white-space: pre"><script><!--<script>--></script></div>a   b',
+      '<div style="white-space: pre"><script><!--<script>--></script></div>a b'],
+    // コメントに似た文字があっても xmp は閉じ、後ろの通常の文字の空白を畳む。
+    ["<xmp><!--</xmp>-->  a  b", "<xmp><!--</xmp>--> a b"],
   ];
   for (const [a, b] of same) assert.equal(normalizedHtml(a), normalizedHtml(b), `${a} と ${b} は同じ描画`);
   const different = [
     ["<b>a</b><i>b</i>", "<b>a</b> <i>b</i>"],
     ["<pre>  x</pre>", "<pre>x</pre>"],
     ["<code>a  b</code>", "<code>a b</code>"],
+    ["<script>a  b</script>", "<script>a b</script>"],
+    ["<style>a  b</style>", "<style>a b</style>"],
     ['<div style="white-space: pre">a  b</div>', '<div style="white-space: pre">a b</div>'],
     ["<pre><pre>a  </pre>  b</pre>", "<pre><pre>a  </pre> b</pre>"],
     ['<td title="a  b">x</td>', '<td title="a b">x</td>'],
@@ -509,6 +562,37 @@ test("描画の比較の正規化", () => {
     ["<div><td><b>a</b></td><i>b</i></div>", "<div><td><b>a</b></td>\n<i>b</i></div>"],
     ["<div><tr>a</tr> <i>b</i></div>", "<div><tr>a</tr><i>b</i></div>"],
     ["<hr>x</hr><i>y</i>", "<hr>x</hr> <i>y</i>"],
+    // 生の文字の要素の中のタグに似た文字は文字。xmp・plaintext・textarea は中の空白をそのまま描く。
+    ["<xmp>\n<div><p>本文</p></div>\n</xmp>", "<xmp>\n<div>\n  <p>本文</p>\n</div>\n</xmp>"],
+    ['<div style="white-space: pre"><iframe></div></iframe>hello   world</div>',
+      '<div style="white-space: pre"><iframe></div></iframe>hello world</div>'],
+    ["<plaintext><div><p>a</p></div>", "<plaintext><div>\n  <p>a</p>\n</div>"],
+    ["<textarea><b  >x</b></textarea>", "<textarea><b>x</b></textarea>"],
+    // xmp の閉じタグはコメントに似た文字に隠れず、pre の残りの空白を保つ。
+    ["<pre><xmp><!--</xmp>--> a</pre>", "<pre><xmp><!--</xmp>-->  a</pre>"],
+    // script の二重のエスケープの中の </script> は閉じず、周りの要素の閉じタグも文字として読む。
+    ['<div style="white-space: pre"><script><!--<script></script></div></script>hello   world</div>',
+      '<div style="white-space: pre"><script><!--<script></script></div></script>hello world</div>'],
+    ["<pre><script><!--<script></script></pre></script>a   b</pre>",
+      "<pre><script><!--<script></script></pre></script>a b</pre>"],
+    // 空要素でない要素の / は無視され、要素は開く。
+    ['<span style="white-space: pre"/>a   b</span>', '<span style="white-space: pre"/>a b</span>'],
+    ['<span style="white-space: pre"><span/>x</span>a   b</span>',
+      '<span style="white-space: pre"><span/>x</span>a b</span>'],
+    ["<xmp>a</xmp\u00a0>  b</xmp>", "<xmp>a</xmp\u00a0> b</xmp>"],
+    // noscript (\u30b9\u30af\u30ea\u30d7\u30c8\u3092\u5207\u3063\u305f\u3068\u304d) \u3068\u3001svg\u30fbmath \u306e\u4e2d\u306e\u540c\u3058\u540d\u524d\u306e\u8981\u7d20\u3067\u306f\u3001\u4e2d\u306e\u30bf\u30b0\u3082\u8981\u7d20\u306b\u306a\u308b\u3002
+    ['<noscript><div style="white-space: pre">a   b</div></noscript>',
+      '<noscript><div style="white-space: pre">a b</div></noscript>'],
+    ['<svg><title></svg><div style="white-space: pre">a   b</div></title></svg>',
+      '<svg><title></svg><div style="white-space: pre">a b</div></title></svg>'],
+    ["<math><textarea></math><pre>a   b</pre></textarea></math>",
+      "<math><textarea></math><pre>a b</pre></textarea></math>"],
+    // svg・math の中では、空要素の名前の要素も中を持ちうる。
+    ['<math><link style="white-space: pre"><mtext>a   b</mtext></link></math>',
+      '<math><link style="white-space: pre"><mtext>a b</mtext></link></math>'],
+    // 違う名前の閉じタグ (</svg>) は math を閉じない。
+    ['<math></svg><link style="white-space: pre">a   b</link></math>',
+      '<math></svg><link style="white-space: pre">a b</link></math>'],
   ];
   for (const [a, b] of different) assert.notEqual(normalizedHtml(a), normalizedHtml(b), `${a} と ${b} は別の描画`);
 });
