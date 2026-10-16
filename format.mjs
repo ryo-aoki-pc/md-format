@@ -1036,6 +1036,8 @@ const htmlTokens = new RegExp([
   String.raw`<\/?[A-Za-z][^\t\n\f\r />]*(?=[\t\n\f\r />])(?:[\t\n\f\r /]|` + htmlAttribute + ")*>",
 ].join("|"), "gu");
 const htmlPieceTokens = new RegExp(htmlTokens);
+// CDATA の読み方も比べるときだけ、svg・math の CDATA を終わりまで 1 つの片にする。
+const htmlCdataTokens = new RegExp(String.raw`<!\[CDATA\[[\s\S]*?(?:\]\]>|$)|` + htmlTokens.source, "gu");
 const htmlTokenAt = new RegExp(htmlTokens.source, "uy");
 
 // HTML は ASCII の英字だけを小文字にする (K などを別の名前に変えない)。
@@ -1182,8 +1184,10 @@ function scriptClosing(html, start) {
 // 生の文字の中は、同じ名前の閉じタグまでを 1 つの文字として読む (中のタグやコメントに似た文字を読まない)。
 // tagsInRaw なら、生の文字の中もタグとして読む。raw は、前の断片から開いている生の文字の要素で、終わりの状態も返す。
 // script の escaped などは断片をまたいで持ち越さず、文書全体を読む描画の比べで守る。
-function htmlPieces(html, raw = null, tagsInRaw = false) {
+// cdata なら、<![CDATA[ から ]]> (無ければ終わり) までを、原文を保つ 1 つの片にする。
+function htmlPieces(html, raw = null, tagsInRaw = false, cdata = false) {
   const pieces = [];
+  const tokens = cdata ? htmlCdataTokens : htmlPieceTokens;
   let last = 0;
   while (last < html.length) {
     let match;
@@ -1201,8 +1205,8 @@ function htmlPieces(html, raw = null, tagsInRaw = false) {
       htmlTokenAt.lastIndex = end?.index ?? html.length;
       match = end && htmlTokenAt.exec(html);
     } else {
-      htmlPieceTokens.lastIndex = last;
-      match = htmlPieceTokens.exec(html);
+      tokens.lastIndex = last;
+      match = tokens.exec(html);
     }
     const until = match ? match.index : html.length;
     if (until > last) pieces.push({ text: html.slice(last, until), raw });
@@ -1218,12 +1222,14 @@ function htmlPieces(html, raw = null, tagsInRaw = false) {
 
 // 空白をそのまま出す要素。正規化と、まとまりの字下げの調整で同じ条件を使う。
 function htmlWhitespaceElement(name, token, flavor) {
-  return flavor.whitespaceElements.includes(name) || htmlTagParts(token).attributes.some((attribute) =>
-    htmlLowerCase(attribute.name) === "style" && /white-space|&|\\/iu.test(attribute.value ?? ""));
+  return flavor.whitespaceElements.includes(name) || htmlTagParts(token).attributes.some((attribute) => {
+    const lower = htmlLowerCase(attribute.name);
+    return lower === "xml:space" || (lower === "style" && /white-space|&|\\/iu.test(attribute.value ?? ""));
+  });
 }
 
 // 描画が同じ HTML を同じ値にする。疑わしい差は残す (整形を拒む側に倒す)。
-// 1. 空白がそのまま出る要素 (whitespaceElements と、style に white-space を書いた要素) の中の文字は原文のまま
+// 1. 空白がそのまま出る要素 (whitespaceElements と、style に white-space を書いた要素・xml:space のある要素) の中の文字は原文のまま
 // 2. それ以外の文字は、ASCII の空白の並びを空白 1 つに畳む。ブロック要素のタグ・<br>・文書の端に接する空白は消す
 //    ただし、HTML の解析で捨てられるタグ (表の外の td・tr などの表の部品と、</hr> のような空要素の閉じタグ) は、
 //    ブロック要素でも空白の境にしない (タグが消えて、前後の文字と空白がそのまま並ぶ)
@@ -1231,17 +1237,21 @@ function htmlWhitespaceElement(name, token, flavor) {
 // 4. 生の文字の要素 (rawTextElements) の中はタグとして読まず、xmp・plaintext・textarea の中の空白は原文のまま
 // 5. ただし、noscript (スクリプトを切ったブラウザや、GitHub・GitLab の消毒) と、SVG・MathML の中の同じ名前の要素では、
 //    中のタグも要素になる。生の文字の要素があれば、中もタグとして読む値も作り、両方を比べる (どちらかで違えば別の値)
-// 6. 空要素は style に white-space を書いても中が無いので、空白をそのまま出す要素に数えない (svg・math の中を除く)。
+// 6. 空要素は style の white-space や xml:space があっても中が無いので、空白をそのまま出す要素に数えない (svg・math の中を除く)。
 //    空要素でない要素は /> でも開く (HTML の要素の / は無視される。svg・math の中で閉じるものを開くと数えても、厳しくなるだけ)
-// 7. タグ・コメントは HTML の字句解析の区切りで読み、引用符の無い値の / と閉じの印、ASCII の空白とそれ以外を分ける。
+// 7. data 状態のタグ・コメント・処理命令・偽のコメントは HTML の字句解析の区切りで読み、引用符の無い値の / と閉じの印、ASCII の空白とそれ以外を分ける。
+// 8. <![CDATA[ があれば、svg・math のために ]]> (無ければ終わり) までを原文のまま比べる読み方も、タグとして読む側に加える。
 function normalizedHtml(html, flavor = flavors.glfm, tables = 0, raw = null, semantic = null) {
   const text = normalizedHtmlValue(html, flavor, tables, raw, false, semantic);
-  if (raw === null && !rawTextHint.test(html)) return text;
-  return JSON.stringify([text, normalizedHtmlValue(html, flavor, tables, raw, true, semantic)]);
+  const cdata = html.includes("<![CDATA[");
+  if (!cdata && raw === null && !rawTextHint.test(html)) return text;
+  const values = [text, normalizedHtmlValue(html, flavor, tables, raw, true, semantic)];
+  if (cdata) values.push(normalizedHtmlValue(html, flavor, tables, raw, true, semantic, true));
+  return JSON.stringify(values);
 }
 
-// 文字とタグの正規化は、どちらの読み方でも同じ手順で行う。
-function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw, semantic = null) {
+// 文字とタグの正規化は、どの読み方でも同じ手順で行う。
+function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw, semantic = null, cdata = false) {
   const { blockElements } = flavor;
   const items = [];
   // tables は、前の断片から開いている table の数。表の部品は、table の中でだけ空白の境にする。
@@ -1259,7 +1269,7 @@ function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw, semantic = nu
       if (item[0] === "text") items.at(-1)[1] = items.at(-1)[1].replace(/ +/gu, " ");
     } else items.push(item);
   };
-  const pieces = htmlPieces(html, raw, tagsInRaw).pieces;
+  const pieces = htmlPieces(html, raw, tagsInRaw, cdata).pieces;
   for (let index = 0; index < pieces.length; index++) {
     const { token, text, raw: rawText } = pieces[index];
     if (token === undefined) {
@@ -1316,13 +1326,13 @@ function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw, semantic = nu
   return JSON.stringify(result);
 }
 
-// コメント・宣言・偽のコメント以外のタグ。空要素と、閉じの印のあるタグは積み上げに残さない。
-// 生の文字の要素では、閉じの印の / は無視する。
+// コメント・宣言・偽のコメント以外のタグ。空要素と、開きタグに閉じの印のある要素は積み上げに残さない。
+// 生の文字の開きタグと、すべての閉じタグでは、末尾の / を無視する。
 function htmlTag(token) {
   const parts = htmlTagParts(token);
   if (!parts) return null;
   const name = htmlLowerCase(parts.name);
-  return { name, closing: parts.closing, empty: voidElements.has(name) || (parts.selfClosing && !rawTextElements.has(name)) };
+  return { name, closing: parts.closing, empty: voidElements.has(name) || (!parts.closing && parts.selfClosing && !rawTextElements.has(name)) };
 }
 
 // 整形器の結果を行に分ける。空行は HTML のブロックを終わらせるので当てない。

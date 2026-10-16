@@ -67,14 +67,16 @@ test("html_cells は既定で有効で、コード・強調・取り消し線を
 test("リンク・画像・裸の URL と共通の実体参照を扱う", async (t) => {
   const options = await project(t);
   for (const flavor of ["glfm", "gfm"]) {
-    for (const [name, html, markdown] of [
+    for (const [name, html, markdown, expected] of [
       ["リンク", '<a href="https://例.jp/a?x=1&amp;y=2" title="題">文字</a>', '[文字](https://例.jp/a?x=1&y=2 "題")'],
       ["画像", '<img src="a.png" alt="i" title="t">', '![i](a.png "t")'],
       ["alt 無し", '<img src="a.png">', "![](a.png)"],
+      ["引用符の無い src の末尾の /", "<img src=a.png/>", "![](a.png/)", '<p><img src="a.png/" alt=""></p>'],
       ["括弧", '<a href="https://example.com/a(b)">文字</a>', "[文字](https://example.com/a\\(b\\))"],
       ["裸の URL", "<code>x</code> https://example.com/a www.example.com a@example.com", "`x` <https://example.com/a> www.example.com <a@example.com>"],
       ["実体参照", "<code>x</code> &quot; &nbsp; &#39; &amp;", "`x` &quot; &nbsp; &#39; &amp;"],
-    ]) await assertFormats({ ...options, flavor }, table(html), markdownTable(markdown), flavor + ": " + name);
+    ]) await assertFormats({ ...options, flavor }, table(html), markdownTable(markdown), flavor + ": " + name,
+      expected === undefined ? undefined : table(expected));
   }
 });
 

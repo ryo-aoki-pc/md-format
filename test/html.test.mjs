@@ -230,6 +230,10 @@ test("Markdown をはさむ div と祖先の details をそろえ、summary は 
   const input = lines("<details><summary>概要</summary><div>", "", "本文 **太字**", "", "</div></details>");
   const expected = lines("<details>", "  <summary>概要</summary>", "<div>", "", "本文 **太字**", "", "</div>", "</details>");
   await assertFormats(options, input, expected, "details の中の div");
+  await assertFormats(options,
+    lines("<details>", "<summary>概要</summary><div>", "", "本文", "", "</div/>", "</details>"),
+    lines("<details>", "  <summary>概要</summary>", "<div>", "", "本文", "", "</div />", "</details>"),
+    "閉じタグの / があってもまとまりを閉じる");
 });
 
 test("続くまとまりと、1 ブロックで閉じる HTML は、それぞれの決まりで整形する", async (t) => {
@@ -656,6 +660,31 @@ test("描画の比較の正規化", () => {
       '<math></svg><link style="white-space: pre">a b</link></math>'],
   ];
   for (const [a, b] of different) assert.notEqual(normalizedHtml(a), normalizedHtml(b), `${a} と ${b} は別の描画`);
+});
+
+test("CDATA と xml:space と noscript の中でも、空白の差を見分ける", () => {
+  const semantic = { decodeHTML, decodeHTMLAttribute };
+  const normalizers = [normalizedHtml, (html) => normalizedHtml(html, undefined, 0, null, semantic)];
+  const different = [
+    ["<svg><text><![CDATA[<span>a   b</span> > c]]></text></svg>",
+      "<svg><text><![CDATA[<span>a b</span> > c]]></text></svg>"],
+    ["<math><mtext><![CDATA[a > b   c]]></mtext></math>", "<math><mtext><![CDATA[a > b c]]></mtext></math>"],
+    ['<svg><text xml:space="preserve">a   b</text></svg>', '<svg><text xml:space="preserve">a b</text></svg>'],
+    ["<noscript><xmp>a   b</xmp></noscript>", "<noscript><xmp>a b</xmp></noscript>"],
+    // HTML の中では宣言が最初の > で終わり、その後の pre は空白をそのまま描く。
+    ["<![CDATA[ > <pre> ]]>a   b</pre>", "<![CDATA[ > <pre> ]]>a b</pre>"],
+    ["<svg><text><![CDATA[a > b   c", "<svg><text><![CDATA[a > b c"],
+  ];
+  const same = [
+    ["<div><p>x</p></div><svg><text><![CDATA[a > b]]></text></svg>",
+      "<div>\n  <p>x</p>\n</div><svg><text><![CDATA[a > b]]></text></svg>"],
+    // 最初の ]]> で CDATA が終わり、その後の通常の文字は空白を畳む。
+    ["<svg><text><![CDATA[a > b]]>c   d</text></svg>", "<svg><text><![CDATA[a > b]]>c d</text></svg>"],
+  ];
+  for (const normalize of normalizers) {
+    for (const [a, b] of different) assert.notEqual(normalize(a), normalize(b), a + " と " + b + " の差を残す");
+    for (const [a, b] of same) assert.equal(normalize(a), normalize(b), a + " と " + b + " は同じ値");
+  }
 });
 
 test("セルの描画の比較でも、HTML と同じ区切りで属性を読む", () => {
