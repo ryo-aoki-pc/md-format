@@ -354,3 +354,23 @@ test("改行が全部消えた後の挿入は、逐次に当てたときと同�
     result(1, { editColumn: 1, insertText: "\n" }),
   ], "CRLF の改行が 0 になった後の 2 つの挿入");
 });
+
+
+test("書式の無いセルは描画せず、多数のセルの検査はまとめて 3 回描く", async (t) => {
+  await inProject(t, {}, async (project) => {
+    const options = { ...project, fixes: { html: false } };
+    const plain = "<table><tr><td>a<br>b</td><td><kbd>Ctrl</kbd></td></tr></table>\n";
+    const emptyStats = {};
+    assert.equal(await formatMarkdown(plain, { ...options, stats: emptyStats }), plain);
+    assert.equal(emptyStats.parses, 0);
+    assert.equal(emptyStats.renders, 0);
+    const input = "<table><tr>" + "<td><code>x</code></td>".repeat(64) + "</tr></table>\n";
+    const expected = "<table><tr>" + "<td>\n\n`x`\n\n</td>".repeat(64) + "</tr></table>\n";
+    for (const exhaustive of [false, true]) {
+      const stats = {};
+      assert.equal(await formatMarkdown(input, { ...options, exhaustive, stats }), expected);
+      assert.equal(stats.renders, 3, "セルの一括描画と文書 C・E の描画だけで確かめる");
+      assert.equal(stats.parses, 2, "元の文書と C だけを解析し、C の結果を lint の段でも使い回す");
+    }
+  });
+});

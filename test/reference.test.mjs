@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { builtinRuleNames, defaultDisabledCategories, fixCategories, formatMarkdown, htmlCategory, tightListsCategory } from "../format.mjs";
+import { builtinRuleNames, defaultDisabledCategories, fixCategories, formatMarkdown, htmlCategory, htmlCellsCategory, tightListsCategory } from "../format.mjs";
 
 // docs/reference/rules.md と README の「整形の例」の例を、書いてあるとおりに整形できるかを確かめる (文書と動作をずらさない)。
 const packageDir = fileURLToPath(new URL("../", import.meta.url));
@@ -31,8 +31,11 @@ const visible = (text) => text.replaceAll("␣", " ").replaceAll("⇥", "\t");
 // 例のコードブロック (整形前と整形後・変わらない・markdownlint の設定) を節に足し、次の整形後が対にする整形前を返す。
 function addExample(section, { info, literal }, pending) {
   const [language, kind, ...flags] = info.split(/\s+/u);
-  const fixes = Object.fromEntries(flags.filter((flag) => flag.startsWith("fixes="))
-    .flatMap((flag) => flag.slice("fixes=".length).split(",")).map((name) => [name, true]));
+  const fixes = Object.fromEntries(flags.filter((flag) => /^(?:no)?fixes=/u.test(flag))
+    .flatMap((flag) => {
+      const [key, names] = flag.split("=");
+      return names.split(",").map((name) => [name, key === "fixes"]);
+    }));
   const flavor = flags.find((flag) => flag.startsWith("flavor="))?.slice("flavor=".length);
   assert.ok(flavor === undefined || flavor === "gfm" || flavor === "glfm", `${section.id}: 方言は gfm か glfm`);
   const input = flags.includes("末尾の改行なし") ? literal.replace(/\n$/u, "") : literal;
@@ -47,9 +50,9 @@ function addExample(section, { info, literal }, pending) {
 }
 
 // ### MDxxx の節ごとに、例 (整形前と整形後・変わらない) と markdownlint の設定を集める。
-// markdownlint のルールでない分類の節 (## HTML のブロック・## loose のリストを詰める) と方言の違いの節の下の ### の節は、
-// html:<見出し>・tight:<見出し>・gfm:<見出し> の名前で集める。
-const categorySections = new Map([["HTML のブロック", "html"], ["loose のリストを詰める", "tight"], ["GFM と GLFM の違い", "gfm"]]);
+// markdownlint のルールでない分類と方言の違いの節の下の ### の節は、
+// html:<見出し>・cells:<見出し>・tight:<見出し>・gfm:<見出し> の名前で集める。
+const categorySections = new Map([["HTML のブロック", "html"], ["HTML の表のセルを Markdown にする", "cells"], ["loose のリストを詰める", "tight"], ["GFM と GLFM の違い", "gfm"]]);
 const sections = new Map();
 let table;
 let withoutFixes;
@@ -144,6 +147,21 @@ test("the HTML block section shows the category and examples for tables, nested 
   assert.ok(html.flatMap(([, section]) => section.examples).some(({ input, expected }) => input !== expected),
     "HTML の節に、整形で変わる例がある");
   assert.equal(htmlCategory, "html");
+});
+
+test("HTML のセルの節には分類と要素ごとの置き換え・保持・無効の例がある", () => {
+  const cells = [...sections].filter(([id]) => id.startsWith("cells:"));
+  assert.deepEqual(cells.map(([id]) => id), [
+    "cells:コードと強調", "cells:リンクと画像", "cells:改行と段落", "cells:リストとタスク", "cells:コードブロック",
+    "cells:引用と説明リスト", "cells:文字のエスケープ", "cells:入れ物の中", "cells:変えないもの", "cells:止めたとき",
+  ]);
+  for (const [id, section] of cells) assert.ok(section.examples.length, `${id} に例がある`);
+  const examples = cells.flatMap(([, section]) => section.examples);
+  assert.ok(examples.some(({ input, expected }) => input !== expected), "Markdown にする例がある");
+  assert.ok(examples.some(({ input, expected }) => input === expected), "変わらない例がある");
+  assert.ok(examples.some(({ fixes }) => fixes.html_cells === false), "html_cells を止める例がある");
+  assert.ok(examples.some(({ fixes }) => fixes.html === false), "html を止める例がある");
+  assert.equal(htmlCellsCategory, "html_cells");
 });
 
 test("the tight list section shows the category and examples that tighten and that keep loose lists", () => {

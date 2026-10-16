@@ -17,7 +17,7 @@ Windows 11・AlmaLinux 10 の導入・利用・更新・任意操作は、setup-
 
 ## 構成
 
-- `format.mjs` — 整形のライブラリ（`formatMarkdown`）と、`mdfmt` の入口。markdownlint-cli2 の修正候補を Comrak の構文木で確かめて当てる。loose のリストを詰める処理と、HTML のブロックの整形もここにある
+- `format.mjs` — 整形のライブラリ（`formatMarkdown`）と、`mdfmt` の入口。markdownlint-cli2 の修正候補を Comrak の構文木で確かめて当てる。loose のリストを詰める処理、HTML の表のセルの書き換え、HTML のブロックの整形もここにある
 - `cli.mjs` — コマンドライン（引数・標準入力・ファイル・フォルダ・`--write`・`--check`・終了コード）
 - `spare.mjs` — Neovim の予備のプロセス。標準入力の依頼だけを受け、`cli.mjs` の `cli()` を走らせる
 - `scripts/setup.mjs` — リポジトリの外への導入と `--check`

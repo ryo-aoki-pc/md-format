@@ -2,7 +2,8 @@
 
 `mdfmt`（[format.mjs](../../format.mjs)。Neovim の保存時と `<leader>cf` の整形も同じ）が、
 markdownlint の各ルールで Markdown をどう変えるかの一覧。loose のリストを詰めることは [loose のリストを詰める](#loose-のリストを詰める)、
-埋め込んだ HTML の整形は [HTML のブロック](#html-のブロック)、方言の違いは [GFM と GLFM の違い](#gfm-と-glfm-の違い) にある。
+HTML のセルの書き換えは [HTML の表のセルを Markdown にする](#html-の表のセルを-markdown-にする)、
+埋め込んだ HTML の字下げは [HTML のブロック](#html-のブロック)、方言の違いは [GFM と GLFM の違い](#gfm-と-glfm-の違い) にある。
 
 - 整形する対象は、`--enable-fixes`・`--disable-fixes` か `.md-format.json` の `fixes` で、下の分類名かルール名（`MD026`・`no-trailing-punctuation`）を選ぶ。
   書かない分類は既定のまま。Neovim（LazyVimStarter）では `lua/plugins/lang-markdown.lua` の `format_fixes` の表で選ぶ（引数になる）
@@ -11,7 +12,8 @@ markdownlint の各ルールで Markdown をどう変えるかの一覧。loose 
 - 選ぶのは整形だけ。markdownlint の診断は変わらない。診断ごと止めるときは、markdownlint の設定でルールを無効にする
 - どの設定でも、Comrak で読んだ構造（見出し・段落・リストの所属と開始番号・リストの tight・強調・リンク・強制改行など）が変わる修正と、
   方言ごとに守る記法（GLFM の `#123`・`~label`・`[[_TOC_]]`・`::include`、GFM の `GH-123`・`@org/team` など）を変える修正は当てない。
-  ただし、見出し・強調・リンクを作る修正（`heading_conversion`・`emphasis_spaces`・`reversed_links`）は、有効にすると構造を変えて当てる（リストの tight は変えない）
+  ただし、`tight_lists` と `html_cells` は、それぞれの節で決めた描画の差を許す。
+  見出し・強調・リンクを作る修正（`heading_conversion`・`emphasis_spaces`・`reversed_links`）は、有効にすると構造を変えて当てる（リストの tight は変えない）
 - 引数の知らない名前や、同じ層で同じルール名や別名を有効と無効の両方に書いたときは、整形せずにエラーにする（文書は変わらない）。
   `.md-format.json` の `fixes` の知らない名前は、警告を出して無視する。
   カスタムルールの別名どうしの衝突は、そのルールの診断が出た文書でだけエラーになる（markdownlint-cli2 がカスタムルールの名前の一覧を返さず、
@@ -958,12 +960,402 @@ machine now.
 日本語の 文の 途中の 空白では 折らない ので この 行は 長くても そのまま 残る ことが ある
 ```
 
+## HTML の表のセルを Markdown にする
+
+分類 `html_cells`、既定で有効。markdownlint のルールではないので、上の一覧の表には入れない。
+止めるときは `--disable-fixes html_cells` か `.md-format.json` の `fixes` に `"html_cells": false` を書く。
+
+- HTML の表（`table`）の書式のあるセル（`td`・`th`）を、開きタグ・空行・Markdown・空行・閉じタグの形にする。続く `html` の字下げで、その表に属する表の部品を表の字下げにそろえる
+- 段落・改行・リスト・タスク・コード・強調・リンク・画像・引用を対象にする。説明リストは GLFM だけ。箇条書き・強調・太字の記号は、文書の最初のものに合わせる
+- 文字だけ・`br`・`kbd` などだけのセル、見出しを含むセル、強調 1 つだけのセル、0 と 1 以外から始まる番号付きのリストを含むセルは変えない
+  （見出しは GitLab のアンカーと目次が変わり、強調だけの段落と途中から始まる番号は markdownlint の MD036・MD029 の診断になるため）。
+  既に Markdown のセル、表の外の `td`、パイプの表も変えない
+- 詰まったリスト・説明・脚注の中、入れ子の表、図や数式を描く言語の `pre`、GLFM で行頭に `::include` が出るセル（行頭でだけ働く）、描画の確かめで違いの出るセルは残す。範囲整形では、表のブロックが範囲に収まるときだけ変える
+- 先に `tight_lists` でリストを詰める。詰めた結果のリストの中の表は残す。セルから作った loose のリストも、`tight_lists` が有効なら同じ保存で詰める。GitHub のコメントでは段落の中の改行が強制改行になるため、例はリポジトリのファイルでの描画を基準にする
+
+描画で許す差は、次の 5 つだけ。セルごとと文書全体の HTML・方言ごとに守る記法・front matter・リストの tight を確かめ、ほかの違いが出るものは HTML のまま残す。
+
+1. セルの直下・引用・loose の項目の、ブロックの間のインラインの並びを `<p>` で包む
+2. `<b>` を `<strong>`、`<i>` を `<em>`、`<s>`・`<strike>` を `<del>` にする
+3. `<pre>` の中身を `<code>` で包み、言語を `class="language-…"` に移す。`<pre>` 直後の改行を消し、コードの末尾に改行が無ければ補う
+4. タスクを `type="checkbox"`・`disabled=""`（チェック済みなら `checked=""` も）の入力要素にし、後に空白を 1 つ置く。画像に `alt` が無ければ空の `alt` を足し、`<ol start="1">` の `start` を省く
+5. 裸の URL・`www.`・メールをリンクにする
+
+Markdown にした部分には markdownlint の診断も出る。言語の無いコードブロックは MD040、代替文字の無い画像は MD045 の対象になる。
+診断の有効・無効は、markdownlint の設定で選ぶ。
+
+### コードと強調
+
+整形前:
+
+```markdown 整形前
+<table><tr><td><code>dnf</code> で <b>root</b> と <i>斜体</i> と <s>消す</s></td></tr></table>
+```
+
+整形後:
+
+```markdown 整形後
+<table>
+<tr>
+<td>
+
+`dnf` で **root** と *斜体* と ~~消す~~
+
+</td>
+</tr>
+</table>
+```
+
+セルの文に `<p>` が付き、`b`・`i`・`s` は `strong`・`em`・`del` になる。
+
+### リンクと画像
+
+整形前:
+
+```markdown 整形前
+<table><tr><td><a href="https://example.com" title="案内">手順</a> と <img src="a.png" alt="図" title="構成"> と https://example.com/help</td></tr></table>
+```
+
+整形後:
+
+```markdown 整形後
+<table>
+<tr>
+<td>
+
+[手順](https://example.com "案内") と ![図](a.png "構成") と <https://example.com/help>
+
+</td>
+</tr>
+</table>
+```
+
+リンクと画像を Markdown にし、裸の URL はリンクになる。セルの文に `<p>` が付く。
+
+### 改行と段落
+
+整形前:
+
+```markdown 整形前
+<table><tr><td><b>a</b><br>b</td><td><p>一</p><p>二</p></td></tr></table>
+```
+
+整形後:
+
+```markdown 整形後
+<table>
+<tr>
+<td>
+
+**a**<br>
+b
+
+</td>
+<td>
+
+一
+
+二
+
+</td>
+</tr>
+</table>
+```
+
+`br` は残し、段落は空行で分ける。最初のセルの文に `<p>` が付き、`b` は `strong` になる。
+
+### リストとタスク
+
+整形前:
+
+```markdown 整形前
+<table><tr><td><ul><li>親<ul><li>子</li></ul></li><li><input type="checkbox" checked>済み</li><li><input type="checkbox">未完了</li></ul><ol><li>一</li><li>二</li></ol></td></tr></table>
+```
+
+整形後:
+
+```markdown 整形後
+<table>
+<tr>
+<td>
+
+- 親
+  - 子
+- [x] 済み
+- [ ] 未完了
+
+1. 一
+2. 二
+
+</td>
+</tr>
+</table>
+```
+
+タスクは無効なチェックボックスとして描き、後に空白を 1 つ置く。
+番号付きのリストは、0 か 1 から始まるものだけを Markdown にする（`<ol start="3">` などは MD029 の診断になるので、そのセルは変えない）。
+
+### コードブロック
+
+整形前:
+
+```markdown 整形前
+<table><tr><td><pre><code class="language-sh">echo &lt;file&gt;</code></pre></td></tr></table>
+```
+
+整形後:
+
+~~~markdown 整形後
+<table>
+<tr>
+<td>
+
+```sh
+echo <file>
+```
+
+</td>
+</tr>
+</table>
+~~~
+
+`pre` の中は `code` で包み、コードの末尾に改行を補う。
+
+### 引用と説明リスト
+
+整形前:
+
+```markdown 整形前
+<table><tr><td><blockquote>引用 <b>太字</b></blockquote><dl><dt>用語</dt><dd>説明</dd></dl></td></tr></table>
+```
+
+整形後:
+
+```markdown 整形後
+<table>
+<tr>
+<td>
+
+> 引用 **太字**
+
+用語
+: 説明
+
+</td>
+</tr>
+</table>
+```
+
+引用の文に `<p>` が付き、`b` は `strong` になる。説明リストは GLFM の記法にする。
+
+変わらない:
+
+```markdown 変わらない flavor=gfm
+<table>
+  <tr>
+    <td>
+      <dl>
+        <dt>用語</dt>
+        <dd>説明</dd>
+      </dl>
+    </td>
+  </tr>
+</table>
+```
+
+GFM では説明リストを含むセルを Markdown にしない。
+
+### 文字のエスケープ
+
+整形前:
+
+```markdown 整形前
+<table><tr><td><p>* _ | ~ $ と #123 と @user</p><p>- 項目ではない</p><p>1. 番号ではない</p></td></tr></table>
+```
+
+整形後:
+
+```markdown 整形後
+<table>
+<tr>
+<td>
+
+\* \_ \| \~ \$ と #123 と @user
+
+\- 項目ではない
+
+1\. 番号ではない
+
+</td>
+</tr>
+</table>
+```
+
+文字として描く記号をエスケープし、方言の参照はそのまま保つ。
+
+### 入れ物の中
+
+整形前:
+
+```markdown 整形前 nofixes=tight_lists
+- 項目
+
+  <table><tr><td><code>dnf</code> で入れる</td></tr></table>
+
+> <table><tr><td><code>引用</code> のセル</td></tr></table>
+```
+
+整形後:
+
+```markdown 整形後
+- 項目
+
+  <table>
+  <tr>
+  <td>
+
+  `dnf` で入れる
+
+  </td>
+  </tr>
+  </table>
+
+> <table>
+> <tr>
+> <td>
+>
+> `引用` のセル
+>
+> </td>
+> </tr>
+> </table>
+```
+
+loose の項目と引用の接頭辞を保ち、セルの文に `<p>` が付く。この例は `tight_lists` を止めている。
+
+### 変えないもの
+
+変わらない:
+
+```markdown 変わらない
+<table>
+  <tr>
+    <td>文字だけ</td>
+    <td>a<br>b</td>
+    <td><kbd>Ctrl</kbd>+<kbd>C</kbd></td>
+    <td>
+      <h3>見出し</h3>
+    </td>
+    <td><b>必須</b></td>
+    <td><b>「重要」</b>です</td>
+  </tr>
+</table>
+```
+
+文字だけ・改行だけ・キーボード表記だけのセル、見出しを含むセル、強調 1 つだけのセルはそのまま。強調にならない位置の要素も HTML で残す。
+
+整形前:
+
+```markdown 整形前
+<table><tr><td><code>dnf</code> と <b>「重要」</b>です</td></tr></table>
+```
+
+整形後:
+
+```markdown 整形後
+<table>
+<tr>
+<td>
+
+`dnf` と <b>「重要」</b>です
+
+</td>
+</tr>
+</table>
+```
+
+コードは Markdown にし、Markdown の強調にならない `b` だけ HTML で残す。セルの文に `<p>` が付く。
+
+変わらない:
+
+```markdown 変わらない
+- 項目
+  <table>
+    <tr>
+      <td><code>dnf</code> で入れる</td>
+    </tr>
+  </table>
+
+<table>
+  <tr>
+    <td>
+      <pre><code class="language-mermaid">graph TD; A--&gt;B</code></pre>
+    </td>
+  </tr>
+</table>
+
+<td><code>表の外</code></td>
+
+| パイプ | 表 |
+| --- | --- |
+| <code>そのまま</code> | <b>文</b> |
+```
+
+詰まったリストの中の表、図を描く言語のコード、表の外の `td`、パイプの表は Markdown のセルにしない。
+
+### 止めたとき
+
+整形前:
+
+```markdown 整形前 nofixes=html_cells
+<table><tr><td><code>dnf</code> で入れる</td></tr></table>
+```
+
+整形後:
+
+```markdown 整形後
+<table>
+  <tr>
+    <td><code>dnf</code> で入れる</td>
+  </tr>
+</table>
+```
+
+`html_cells` を止めると、`html` の字下げだけを当て、描画は変えない。
+
+整形前:
+
+```markdown 整形前 nofixes=html
+<table><tr><td><code>dnf</code> で入れる</td></tr></table>
+```
+
+整形後:
+
+```markdown 整形後
+<table><tr><td>
+
+`dnf` で入れる
+
+</td></tr></table>
+```
+
+`html` を止めても、セルの中は Markdown にする。表を行に分ける字下げは行わない。
+
+変わらない:
+
+```markdown 変わらない nofixes=html_cells,html
+<table><tr><td><code>dnf</code> で入れる</td></tr></table>
+```
+
+両方を止めると、セルの書き換えも表の字下げも行わない。
+
 ## HTML のブロック
 
 分類 `html`、既定で有効。markdownlint のルールではないので、上の一覧の表には入れない。止めるときは `--disable-fixes html` か `.md-format.json` の `fixes` に `"html": false` を書く。
 
 - 行頭のタグで始まり空行で終わる HTML のブロックを、[js-beautify](https://github.com/beautifier/js-beautify) でタグの入れ子に合わせて 2 つずつ字下げする。
-  ブロック要素 (`<tr>`・`<td>`・`<li>` など) は 1 行ずつにし、インライン要素 (`<b>`・`<code>` など) と文の行は分けない。折り返さない
+  ブロック要素 (`<tr>`・`<td>`・`<li>` など) は 1 行ずつにし、残っているインライン要素 (`<b>`・`<code>` など) と文の行は分けない。折り返さない。
+  表の書式のあるセルは、先に `html_cells` で Markdown にする（[HTML の表のセルを Markdown にする](#html-の表のセルを-markdown-にする)）
 - 整形の前後で、Comrak の HTML の描画 (描画に出ない空白の違いを除く)・Markdown の構造・方言ごとに守る記法が変わらないブロックだけを直す。
   `<pre>`・`<textarea>`・`<code>`・`<kbd>`・`<samp>` の中の空白は変えない。インライン要素どうしの間の空白の有無も変えない
 - HTML の中に Markdown を書くとき (空行で区切る) は、同じ入れ物の中で開きと閉じの対が取れる断片をつないで整形し、間の Markdown と空行は変えない。
@@ -991,11 +1383,12 @@ machine now.
 </table>
 ```
 
-セルの中の `<br>`・`<code>`・`<pre>` と属性は変えない。`<pre>` の中の字下げもそのまま。
+`html_cells` を止めたときは、セルの中の `<br>`・`<code>`・`<pre>` と属性を変えない。`<pre>` の中の字下げもそのまま。
+既定では、書式のあるセルを [Markdown にする](#html-の表のセルを-markdown-にする)。
 
 整形前:
 
-```markdown 整形前
+```markdown 整形前 nofixes=html_cells
 <table><thead><tr><th>キー</th><th>説明</th></tr></thead><tbody><tr><td><code>a  b</code></td><td colspan="2">一行目<br>二行目</td></tr><tr><td><pre>  x
     y</pre></td></tr></tbody></table>
 ```

@@ -408,3 +408,95 @@ GitHub の Markdown API（`POST /markdown`。gh 2.102.0 の認証）で、送っ
 - script の escaped などの状態は、HTML のブロックをまたいで持ち越さない（文書全体の描画の比べで見分ける）
 - Neovim の保存の整形そのもの
 - abiko-pi での速さ
+
+## HTML の表のセルを Markdown にする検証（2026-10-16）
+
+対象は、`f16823a` に分類 `html_cells`（HTML の表の書式のあるセルを Markdown にする。既定で有効）を足した版（この節を足したコミット）。比べる前の版は `f16823a`。
+
+### 環境
+
+- Windows 11 Pro 10.0.26300、Node.js 26.10.0
+- abiko-pi: Raspberry Pi 5 の AlmaLinux 10.2（aarch64）、Node.js 22.23.2
+- 依存は `package-lock.json` のまま（comrak 0.48.0-rc.0・markdownlint-cli2 0.23.3・js-beautify 2.0.3）。`entities` 8.1.0 を直接の依存に足した（markdownlint-cli2 → markdown-it が既に入れていたもの。lock の差は根の `dependencies` の 1 行で、版と integrity は前と同じ）
+- 文書の集まりは、上の節と同じ 225 本
+- GitHub の描画は Markdown API（`mode=markdown` と `mode=gfm`）、GitLab の描画は gitlab.com の Markdown API（`gfm: true`）。送ったのは試験用に作った文書だけ
+- mdtable（md-table-excel）0.1.0
+
+### 自動テスト
+
+- Windows: `npm test` の 279 件のうち 278 件が成功し、1 件を飛ばした
+- abiko-pi: `npm ci --ignore-scripts` の後、279 件のうち 278 件が成功し、1 件を飛ばした
+- どちらも、全 `.mjs` の `node --check` が通った。Windows で `git diff --check` が通った
+- 足した試験: `test/cells.test.mjs` 32 件（要素ごとの置き換え・変えないセル・入れ物・範囲整形・設定と CLI・CRLF・文書の記号に合わせること・2 回目と近道の有無で同じこと）、
+  `test/semantic-html.test.mjs` 4 件（比べる正規化）、`test/fast-paths.test.mjs` 1 件（書式の無いセルでは解析も描画もしない・64 個のセルを描画 3 回と解析 2 回で確かめる）、
+  `test/reference.test.mjs` 1 件（rules.md の新しい節の見出しと例）
+- rules.md の新しい節と README の「整形の例」の例は、`test/reference.test.mjs` が整形し直して確かめる。字下げの試験（`test/html.test.mjs`）は `html_cells` を止めて、今までの入力と期待のまま
+
+### 前の版と出力を比べる
+
+`f16823a` の `format.mjs` と、この版の `format.mjs` を、同じ依存（`--runtime-dir`）で文書の集まりの 225 本に 1 本ずつ別のプロセスでかけ、標準出力と成否を比べた。
+
+- GLFM と GFM（`--flavor gfm`）のどちらも、`--disable-fixes html_cells` を付けたこの版の出力は、225 本すべて前の版と同じ。誤り 0
+- 既定（`html_cells` が有効）で変わったのは、どちらの方言も `md-table-excel/docs/verification/excel-check.md` の 1 本だけ。
+  `<td><code>dnf</code></td>` が `` `dnf` `` の Markdown のセルに、`<td><pre><code class="language-sh">…</code></pre></td>` が `` ```sh `` のフェンスのセルになった
+- 変わった出力も含め、225 本すべてで、この版の出力を整形し直しても変わらない
+
+### 試験用の文書で確かめた形
+
+試験の見本のほかに、次の形を整形して、出力・2 回目の整形・近道の有無・Comrak の描画を確かめた。
+
+- 変える: GLFM の `>>>` の引用の中の表、複数行のセル、`th` と `thead`・`tbody`、属性（`colspan`・`align`）のあるセル、リンクの中の画像、
+  段落が 2 つあって詰められない項目の中の表、文書の強調が `_`・`__` のとき（`_a_`・`__b__` にそろう）、文書の箇条書きが `*` のとき
+- HTML のまま残す: 引用の怠惰な行にかかるセル、詰められる手順の項目の中の表（先に `tight_lists` がリストを詰める）、`[^1]` や `[[_TOC_]]` を含むセル、
+  `<b><i>…</i></b>` の入れ子（中のコードだけを Markdown にする）
+- エスケープ: リンクの参照定義と同じ名前の `[foo]` は `\[foo\]`、`$a$` は `\$a\$`、`<br>` の後の `1.`・`#`・`-`・`::include` で始まる文は行を分けずに同じ行に残す
+- 番号付きのリストは、0 か 1 から始まるものだけを変える。`<ol start="3">` を `3.` から始めると、markdownlint の MD029（既定の `one_or_ordered`）の診断になった
+- 太字だけのセル（`**必須**` だけの段落）は MD036 の診断になるので変えない
+
+### 描画の比べ（GitHub・GitLab）
+
+`<code>`・`<b>`・`<i>`・`<s>`・`<strong>`・`<em>`・`<del>`・リンク・画像・裸の URL・実体参照・`<br>` と `<p>`・入れ子のリスト・`<ol start>`・タスク・`<pre>`・引用・説明リスト・エスケープする記号・`#123`・`@root`・見出し・太字だけのセルを並べた表を、整形の前後で描いた。
+
+- GitHub（`mode=markdown`、リポジトリのファイルと同じ）と GitLab の両方で、セルの中の空行で区切った Markdown が描かれた
+- 前後の違いは、計画で許した差だけ: セルの文が `<p>` に包まれる、`b`・`i`・`s` が `strong`・`em`・`del` になる、裸の URL がリンクになる（GitHub は前からリンクにしていた。GitLab は新しくリンクになる）
+- 各サービスの飾りの違い: タスクは、前は GitHub も GitLab もチェックボックスを消していたが、後はどちらもタスクのリストとして描いた。
+  コードは、GitHub が後で色付けした（GitLab は前後とも色付け）。GitLab は、エスケープした `~`・`$` を `<span data-escaped-char>` で包んだ（見た目は同じ）
+- GitHub のコメント（`mode=gfm`）では、`<br>` の後の改行が強制改行にもなり、改行が 2 つに見えた。リポジトリのファイルの描画では起きない
+- 説明リストは GLFM の記法なので、GitHub では説明リストにならない（GFM の方言では変えない）
+- 見出しを含むセルは変えない。GitLab は Markdown の見出しにだけアンカーを付けて `[[_TOC_]]` に入れ、生の `<h3>` には付けなかった。GitHub は両方に付けた
+
+### mdtable との形
+
+- 整形した `excel-check.md` を mdtable で書き出すと、HTML の表のシートのセルの中身は、整形の前の文書を書き出したときと同じだった。変えずに取り込むと「Markdown は変わりません」
+- 書き出したブックで、`` `dnf` `` のセルを `` `dnf` と `yum` `` に変えて取り込んだ文書と、`<td><code>dnf</code> と <code>yum</code></td>` にした文書をこの版で整形したものは、表の部分が同じ行になった（mdtable の書き戻しの形と同じ）
+
+### レビュー
+
+- Grok Build 1.0.52（読み取り専用。差分と全文を写したフォルダーだけを読み、フォルダーは変わらなかった）の指摘 4 件を、整形して確かめた
+  - 採った: 比べる正規化が、文字が URL・`www.`・メールの形でないリンク（`<a href="hello">hello</a>`）や、前後が文字に接するリンク（`a<a href="…">https://…</a>b`）まで外していた。
+    Comrak が裸の URL をリンクにする形だけを外すように狭め、試験に足した
+  - 採った: GLFM で `<td><p>::include{file=…}</p></td>` が、行頭に `::include` のある Markdown になっていた。`::include` は Markdown の行頭でだけ働くので、そのセルを HTML のまま残すようにした
+  - 採った: 設計の文書の許す差に `www.` が抜けていた
+  - 採らなかった: 同じ形の `[TOC]` も残すべき、という推測。gitlab.com の Markdown API で、HTML の `<td><p>[TOC]</p></td>` も、Markdown のセルの `[TOC]` も、同じ目次になった（描画が変わらない）
+  - 採らなかった: 計画の `<ol start="3">` の例が古い（計画はリポジトリの外。rules.md と試験は直した動きと合っている）
+- Antigravity CLI 1.4.0 は、割り当てを使い切っていて（`RESOURCE_EXHAUSTED`）、レビューできなかった
+
+### 速さ
+
+上の節と同じ測り方（Windows。`bench/bench.mjs`、中央値、5 回）。同じ PC でほかの作業も動いていたので、上の節より全体に遅い。前の版とこの版は交互に動かした。
+
+| 文書 | 前の版 | この版 |
+| --- | ---: | ---: |
+| 15,092 行 | 9,710 ms | 9,096 ms |
+| `excel-check.md` 44 行 | 518 ms | 566 ms |
+| `glfm-format.md` 1,110 行 | 497 ms | 515 ms |
+| 書式のあるセルが 300 個ある 304 行の表（初めて変える） | 584 ms | 813 ms |
+| 上の表を変えた後の 2,704 行（もう一度整形する） | 574 ms | 578 ms |
+
+- 書式のあるセルの無い文書は、この段で解析も描画もしない（`test/fast-paths.test.mjs`）
+- 初めて変えるときの増えた分は、300 個のセルの Markdown をまとめて 1 回描くことと、置き換えた文書と期待の文書を 1 回ずつ描くこと
+
+### この検証で未検証のこと
+
+- Neovim の保存の整形そのもの（LazyVimStarter の配線の試験は、導入を更新した後に通す）
+- abiko-pi での速さ
