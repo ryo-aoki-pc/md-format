@@ -1026,25 +1026,68 @@ function descendingFix(a, b) {
 // 見分ける (広めに当たっても解析が 1 回増えるだけ)。<https://…> の autolink には当たらない。
 const htmlBlockHint = new RegExp(String.raw`^[ \t>]*(?:(?:[-*+:~]|\d{1,9}[.)]|\[\^[^\]\r\n]+\]:)[ \t]+[ \t>]*)*` +
   String.raw`<\/?[A-Za-z][A-Za-z0-9-]*(?=[\s/>]|$)`, "mu");
-// HTML のタグ・コメント・宣言。それ以外は文字。
+// HTML のタグ・コメント・宣言を、WHATWG の data 状態と同じ区切りで読む。それ以外は文字。
+// 属性名と値の末尾の先読みで、後戻りによる別の読み方を作らない。
+const htmlAttribute = String.raw`([^\t\n\f\r />][^\t\n\f\r />=]*)(?=[\t\n\f\r />=])(?:[\t\n\f\r ]*=[\t\n\f\r ]*("[^"]*"|'[^']*'|[^\t\n\f\r >"'][^\t\n\f\r >]*(?=[\t\n\f\r >])|(?=>))|(?![\t\n\f\r ]*=))`;
+const htmlAttributeAt = new RegExp(htmlAttribute, "uy");
 const htmlTokens = new RegExp([
-  String.raw`<!--[\s\S]*?-->`, String.raw`<![^>]*>`, String.raw`<\?[\s\S]*?\?>`,
-  String.raw`<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>\x60]+))?)*\s*\/?>`,
+  String.raw`<!--(?:-?>|[\s\S]*?--!?>|[\s\S]*$)`, String.raw`<![^>]*(?:>|$)`, String.raw`<\?[^>]*(?:>|$)`,
+  String.raw`<\/(?:>|[^A-Za-z>][^>]*(?:>|$))`,
+  String.raw`<\/?[A-Za-z][^\t\n\f\r />]*(?=[\t\n\f\r />])(?:[\t\n\f\r /]|` + htmlAttribute + ")*>",
 ].join("|"), "gu");
 const htmlPieceTokens = new RegExp(htmlTokens);
 const htmlTokenAt = new RegExp(htmlTokens.source, "uy");
+
+// HTML は ASCII の英字だけを小文字にする (K などを別の名前に変えない)。
+function htmlLowerCase(value) {
+  return value.replace(/[A-Z]/gu, (letter) => letter.toLowerCase());
+}
+
+// タグの部品を原文のまま読む。引用符の無い値の / と、区切りとしての閉じの印を分ける。
+function htmlTagParts(token) {
+  const match = /^<(\/?)([A-Za-z][^\t\n\f\r />]*)/u.exec(token);
+  if (!match) return null;
+  const attributes = [];
+  let offset = match[0].length;
+  let selfClosing = false;
+  while (offset < token.length - 1) {
+    if (/[\t\n\f\r /]/u.test(token[offset])) {
+      if (token[offset] === "/" && offset === token.length - 2) selfClosing = true;
+      offset++;
+      continue;
+    }
+    htmlAttributeAt.lastIndex = offset;
+    const attribute = htmlAttributeAt.exec(token);
+    if (!attribute) return null;
+    attributes.push({ name: attribute[1], value: attribute[2] ?? null });
+    offset = htmlAttributeAt.lastIndex;
+  }
+  return { name: match[2], closing: Boolean(match[1]), attributes, selfClosing };
+}
+
+// 値の外の引用符だけを取り除く。実体参照は呼び出し側で戻す。
+function htmlAttributeValue(value) {
+  if (value === null) return "";
+  return value[0] === '"' || value[0] === "'" ? value.slice(1, -1) : value;
+}
 
 // 表の部品。HTML の解析は、table の外のこれらのタグを捨てる。
 const tableParts = new Set(["caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr"]);
 // 空要素。HTML の解析は、これらの閉じタグを捨てる (</br> だけは <br> と読む)。
 const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
 
-// タグの引用符の外の空白の並びを 1 つにし、= の前後と閉じ (> と />) の前の空白を消す。
+// タグの部品を並べ直し、属性の区切りと = の前後の空白だけをそろえる。
 // semantic のときだけ、描画で同じになる属性の並び・引用符・実体参照もそろえる。
 function normalizedTag(token, semantic = null, foreign = false) {
-  if (semantic) {
-    const tag = semanticHtmlTag(token, semantic);
-    return JSON.stringify([tag.closing, tag.name, tag.attributes, tag.selfClosing && (foreign || !voidElements.has(tag.name))]);
+  const parts = htmlTagParts(token);
+  if (parts) {
+    if (semantic) {
+      const tag = semanticHtmlTag(token, semantic);
+      return JSON.stringify([tag.closing, tag.name, tag.attributes, tag.selfClosing && (foreign || !voidElements.has(tag.name))]);
+    }
+    return "<" + (parts.closing ? "/" : "") + parts.name +
+      parts.attributes.map(({ name, value }) => " " + name + (value === null ? "" : "=" + value)).join("") +
+      (parts.selfClosing ? " /" : "") + ">";
   }
   return token.replace(/("[^"]*"|'[^']*')|(\s*=\s*)|(\s+(?=\/?>$))|\s+/gu,
     (match, quoted, equals, closing) => quoted ?? (equals !== undefined ? "=" : closing !== undefined ? "" : " "));
@@ -1052,25 +1095,19 @@ function normalizedTag(token, semantic = null, foreign = false) {
 
 // 同じ名前の属性は最初のものだけを使う。引用符の無い値の末尾の / は値の一部になる。
 function semanticHtmlTag(token, { decodeHTMLAttribute }) {
-  const match = /^<(\/?)([A-Za-z][A-Za-z0-9-]*)/u.exec(token);
+  const parts = htmlTagParts(token);
   const attributes = new Map();
-  const pattern = /\s+([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>\x60]+)))?/uy;
-  let offset = match[0].length;
-  while (offset < token.length) {
-    pattern.lastIndex = offset;
-    const attribute = pattern.exec(token);
-    if (!attribute) break;
-    const name = attribute[1].toLowerCase();
+  for (const attribute of parts.attributes) {
+    const name = htmlLowerCase(attribute.name);
     if (!attributes.has(name)) {
-      let value = decodeHTMLAttribute(attribute[2] ?? attribute[3] ?? attribute[4] ?? "");
+      let value = decodeHTMLAttribute(htmlAttributeValue(attribute.value));
       if (name === "href" || name === "src") value = semanticHtmlUrl(value);
       attributes.set(name, value);
     }
-    offset = pattern.lastIndex;
   }
-  return { name: match[2].toLowerCase(), closing: Boolean(match[1]),
+  return { name: htmlLowerCase(parts.name), closing: parts.closing,
     attributes: [...attributes].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
-    selfClosing: /^\s*\/>$/u.test(token.slice(offset)) };
+    selfClosing: parts.selfClosing };
 }
 
 // 壊れた % があっても、比べる処理を止めずに原文を使う。
@@ -1181,8 +1218,8 @@ function htmlPieces(html, raw = null, tagsInRaw = false) {
 
 // 空白をそのまま出す要素。正規化と、まとまりの字下げの調整で同じ条件を使う。
 function htmlWhitespaceElement(name, token, flavor) {
-  return flavor.whitespaceElements.includes(name) ||
-    /\sstyle\s*=\s*(?:"[^"]*white-space|'[^']*white-space|[^\s>]*white-space)/iu.test(token);
+  return flavor.whitespaceElements.includes(name) || htmlTagParts(token).attributes.some((attribute) =>
+    htmlLowerCase(attribute.name) === "style" && /white-space|&|\\/iu.test(attribute.value ?? ""));
 }
 
 // 描画が同じ HTML を同じ値にする。疑わしい差は残す (整形を拒む側に倒す)。
@@ -1196,6 +1233,7 @@ function htmlWhitespaceElement(name, token, flavor) {
 //    中のタグも要素になる。生の文字の要素があれば、中もタグとして読む値も作り、両方を比べる (どちらかで違えば別の値)
 // 6. 空要素は style に white-space を書いても中が無いので、空白をそのまま出す要素に数えない (svg・math の中を除く)。
 //    空要素でない要素は /> でも開く (HTML の要素の / は無視される。svg・math の中で閉じるものを開くと数えても、厳しくなるだけ)
+// 7. タグ・コメントは HTML の字句解析の区切りで読み、引用符の無い値の / と閉じの印、ASCII の空白とそれ以外を分ける。
 function normalizedHtml(html, flavor = flavors.glfm, tables = 0, raw = null, semantic = null) {
   const text = normalizedHtmlValue(html, flavor, tables, raw, false, semantic);
   if (raw === null && !rawTextHint.test(html)) return text;
@@ -1230,12 +1268,12 @@ function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw, semantic = nu
       else pushText(value);
       continue;
     }
-    if (token.startsWith("<!") || token.startsWith("<?")) {
+    const tag = htmlTag(token);
+    if (!tag) {
       items.push(["markup", token]);
       continue;
     }
-    const [, slash, name] = /^<(\/?)([A-Za-z][A-Za-z0-9-]*)/u.exec(token);
-    const lower = name.toLowerCase();
+    const { name: lower, closing: slash } = tag;
     // </br> は <br> と読まれるので、境のままにする。
     const dropped = (tableParts.has(lower) && !tables) || (slash && voidElements.has(lower) && lower !== "br");
     if (semantic && !rawText && !foreign.length && !exact.length && lower === "a" && !slash) {
@@ -1278,12 +1316,13 @@ function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw, semantic = nu
   return JSON.stringify(result);
 }
 
-// コメント・宣言以外のタグ。空要素と /> のタグは積み上げに残さない (生の文字の要素の / は無視する)。
+// コメント・宣言・偽のコメント以外のタグ。空要素と、閉じの印のあるタグは積み上げに残さない。
+// 生の文字の要素では、閉じの印の / は無視する。
 function htmlTag(token) {
-  const match = /^<(\/?)([A-Za-z][A-Za-z0-9-]*)/u.exec(token);
-  if (!match) return null;
-  const name = match[2].toLowerCase();
-  return { name, closing: Boolean(match[1]), empty: voidElements.has(name) || (token.endsWith("/>") && !rawTextElements.has(name)) };
+  const parts = htmlTagParts(token);
+  if (!parts) return null;
+  const name = htmlLowerCase(parts.name);
+  return { name, closing: parts.closing, empty: voidElements.has(name) || (parts.selfClosing && !rawTextElements.has(name)) };
 }
 
 // 整形器の結果を行に分ける。空行は HTML のブロックを終わらせるので当てない。
@@ -1652,12 +1691,11 @@ function htmlCellsHint(source) {
 
 // HTML の属性は、値の無いものも空文字として読む。重複は変換を見送る。
 function cellAttributes(token, decode) {
-  const body = token.replace(/^<\/?[A-Za-z][A-Za-z0-9-]*/u, "").replace(/>$/u, "");
   const attributes = new Map();
-  for (const match of body.matchAll(/([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>\x60]+)))?/gu)) {
-    const name = match[1].toLowerCase();
+  for (const attribute of htmlTagParts(token).attributes) {
+    const name = htmlLowerCase(attribute.name);
     if (attributes.has(name)) return null;
-    attributes.set(name, decode(match[2] ?? match[3] ?? match[4] ?? ""));
+    attributes.set(name, decode(htmlAttributeValue(attribute.value)));
   }
   return attributes;
 }
