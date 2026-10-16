@@ -1038,17 +1038,29 @@ function normalizedTag(token) {
     (match, quoted, equals, closing) => quoted ?? (equals !== undefined ? "=" : closing !== undefined ? "" : " "));
 }
 
+// 生の文字として読む要素の中の <table> は、表の深さに数えない。
+const rawTextElements = new Set(["script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes", "noscript", "plaintext"]);
+function htmlRawText(raw, name, closing) {
+  if (raw) return raw !== "plaintext" && closing && name === raw ? null : raw;
+  return !closing && rawTextElements.has(name) ? name : null;
+}
+
+// 空白をそのまま出す要素。正規化と、まとまりの字下げの調整で同じ条件を使う。
+function htmlWhitespaceElement(name, token, flavor) {
+  return flavor.whitespaceElements.includes(name) ||
+    /\sstyle\s*=\s*(?:"[^"]*white-space|'[^']*white-space|[^\s>]*white-space)/iu.test(token);
+}
+
 // 描画が同じ HTML を同じ値にする。疑わしい差は残す (整形を拒む側に倒す)。
 // 1. 空白がそのまま出る要素 (whitespaceElements と、style に white-space を書いた要素) の中の文字は原文のまま
 // 2. それ以外の文字は、ASCII の空白の並びを空白 1 つに畳む。ブロック要素のタグ・<br>・文書の端に接する空白は消す
 //    ただし、HTML の解析で捨てられるタグ (表の外の td・tr などの表の部品と、</hr> のような空要素の閉じタグ) は、
 //    ブロック要素でも空白の境にしない (タグが消えて、前後の文字と空白がそのまま並ぶ)
 // 3. インライン要素どうしの間の空白は有無を残す (<b>a</b><i>b</i> と <b>a</b> <i>b</i> は別の値)。コメントは原文のまま
-function normalizedHtml(html, flavor = flavors.glfm) {
-  const { blockElements, whitespaceElements } = flavor;
+function normalizedHtml(html, flavor = flavors.glfm, tables = 0, raw = null) {
+  const { blockElements } = flavor;
   const items = [];
-  // 開いている table の数。表の部品のタグは、table の中でだけ空白の境にする。
-  let tables = 0;
+  // tables は、前の断片から開いている table の数。表の部品は、table の中でだけ空白の境にする。
   // 空白がそのまま出る要素の、開いているものの名前と、同じ名前の入れ子の深さ。
   const exact = [];
   let last = 0;
@@ -1068,13 +1080,14 @@ function normalizedHtml(html, flavor = flavors.glfm) {
     // </br> は <br> と読まれるので、境のままにする。
     const dropped = (tableParts.has(lower) && !tables) || (slash && voidElements.has(lower) && lower !== "br");
     items.push(["tag", normalizedTag(token), blockElements.has(lower) && !dropped]);
-    if (lower === "table") tables = Math.max(0, tables + (slash ? -1 : 1));
+    if (lower === "table" && !raw) tables = Math.max(0, tables + (slash ? -1 : 1));
+    raw = htmlRawText(raw, lower, Boolean(slash));
     const open = exact.at(-1);
     if (slash) {
       if (open?.name === lower && --open.depth === 0) exact.pop();
     } else if (!token.endsWith("/>")) {
       if (open?.name === lower) open.depth++;
-      else if (whitespaceElements.includes(lower) || /\sstyle\s*=\s*(?:"[^"]*white-space|'[^']*white-space|[^\s>]*white-space)/iu.test(token)) {
+      else if (htmlWhitespaceElement(lower, token, flavor)) {
         exact.push({ name: lower, depth: 1 });
       }
     }
@@ -1095,19 +1108,158 @@ function normalizedHtml(html, flavor = flavors.glfm) {
   return JSON.stringify(result);
 }
 
-// 整形の対象にできる HTML のブロックと、整形した行。js-beautify が直すものが無ければ空。
-// 対象は一般のタグで始まるブロック (種類 6・7) だけ。pre・script・style・textarea で始まるもの (種類 1) とコメント (種類 2) などは変えない。
-// ブロックの各行が「入れ物の接頭辞 + literal の行」になっているものだけを扱う (タブや、揃わない接頭辞の続きの行があれば見送る)。
+// コメント・宣言以外のタグ。空要素と /> のタグは積み上げに残さない (生の文字の要素の / は無視する)。
+function htmlTag(token) {
+  const match = /^<(\/?)([A-Za-z][A-Za-z0-9-]*)/u.exec(token);
+  if (!match) return null;
+  const name = match[2].toLowerCase();
+  return { name, closing: Boolean(match[1]), empty: voidElements.has(name) || (token.endsWith("/>") && !rawTextElements.has(name)) };
+}
+
+// 整形器の結果を行に分ける。空行は HTML のブロックを終わらせるので当てない。
+function beautifiedHtmlRows(text, beautify, flavor) {
+  // 整形器が設定を書き換えても、次の呼び出しに残らないよう毎回作る。
+  const formatted = beautify(text, { ...beautifyOptions, content_unformatted: [...flavor.whitespaceElements] });
+  if (typeof formatted !== "string") throw new Error("HTML の整形器が文字列を返しませんでした。");
+  const rows = formatted.split(/\r\n|\r|\n/u);
+  return rows.some((row) => !row.trim()) ? null : rows;
+}
+
+function htmlFragmentEdit(block, output, ending) {
+  const { rows, prefixes, start, end, line } = block;
+  if (output.join("\n") === rows.join("\n")) return null;
+  // 2 行目からの接頭辞は元の 2 行目のもの。1 行だった断片は、1 行目の接頭辞の > 以外を空白にする。
+  // 脚注などで続きの行の幅が合わなければ、当てた後の literal の確かめで外す。
+  const continuation = rows.length > 1 ? prefixes[1] : prefixes[0].replace(/[^>]/gu, " ");
+  const replacement = output.map((row, index) => (index ? continuation : prefixes[0]) + row).join(ending);
+  return { start, end, replacement, line, rows: rows.length, output };
+}
+
+// つないで整形した断片の、各行が属する要素と祖先をたどる。要素は同名でも開きタグごとに区別する。
+// タグを全文から読むので、複数行の属性や、属性の中のタグに似た文字も分けない。
+function htmlGroupPaths(fragments, flavor) {
+  const text = fragments.flat().join("\n");
+  const tokens = [...text.matchAll(htmlTokens)];
+  const elements = [];
+  const stack = [];
+  const exact = [];
+  const paths = [];
+  let offset = 0;
+  let cursor = 0;
+  let tokenEnd = 0;
+  let raw = null;
+  for (const [fragment, rows] of fragments.entries()) {
+    for (const row of rows) {
+      const indent = /^[ \t]*/u.exec(row)[0];
+      // 前の行で始まったコメントや属性値の中の行と、生の文字の要素 (xmp・plaintext など) の中の行も、行頭の空白を変えない。
+      const info = { path: [...stack], indent: indent.length, exact: exact.length > 0 || offset < tokenEnd || raw !== null, tag: false };
+      if (!info.exact && indent.includes("\t")) return null;
+      while (cursor < tokens.length && tokens[cursor].index < offset + row.length) {
+        const match = tokens[cursor++];
+        const token = match[0];
+        tokenEnd = match.index + token.length;
+        const tag = htmlTag(token);
+        if (!tag) continue;
+        const nextRaw = htmlRawText(raw, tag.name, tag.closing);
+        // 生の文字の中は対応する閉じタグだけを読む。文字列中の </details> などは要素ではない。
+        if (raw && nextRaw) continue;
+        raw = nextRaw;
+        const { name, closing, empty } = tag;
+        let path;
+        if (closing) {
+          const index = stack.findLastIndex((element) => element.name === name);
+          if (!empty && index < 0) return null;
+          path = empty ? [...stack] : stack.slice(0, index + 1);
+          if (!empty) stack.splice(index).forEach((element) => { element.closeFragment = fragment; });
+        } else {
+          const element = { name, indent: indent.length, leading: match.index === offset + indent.length,
+            table: stack.findLast((ancestor) => ancestor.name === "table"),
+            openFragment: fragment, closeFragment: empty ? fragment : undefined };
+          elements.push(element);
+          path = [...stack, element];
+          if (!empty) stack.push(element);
+        }
+        if (match.index === offset + indent.length) {
+          info.path = path;
+          info.tag = true;
+        }
+        // 空白をそのまま出す要素の、同じ名前の入れ子の深さも追う (normalizedHtml と同じ)。
+        const open = exact.at(-1);
+        if (closing) {
+          if (open?.name === name && --open.depth === 0) exact.pop();
+        } else if (!empty) {
+          if (open?.name === name) open.depth++;
+          else if (htmlWhitespaceElement(name, token, flavor)) exact.push({ name, depth: 1 });
+        }
+      }
+      paths.push(info);
+      offset += row.length + 1;
+    }
+  }
+  return stack.length ? null : { elements, paths };
+}
+
+// Markdown をはさむまとまりを 1 回で整形し、断片の先頭の要素と祖先を入れ物の字下げにそろえる。
+// Markdown をはさむ table の部品もそろえる。同じ断片で閉じる table の部品と、空白を保つ行には波及させない。
+function htmlGroupOutput(blocks, beautify, flavor) {
+  const input = blocks.map(({ rows }) => rows.join("\n"));
+  let marker = "<!--mdfmt-gap-->";
+  for (let suffix = 1; input.some((text) => text.includes(marker)); suffix++) marker = "<!--mdfmt-gap-" + suffix + "-->";
+  const rows = beautifiedHtmlRows(input.join("\n" + marker + "\n"), beautify, flavor);
+  if (!rows) return null;
+  const fragments = [[]];
+  for (const row of rows) {
+    if (row.trim() === marker) fragments.push([]);
+    else fragments.at(-1).push(row);
+  }
+  if (fragments.length !== blocks.length || fragments.some((fragment) => !fragment.length)) return null;
+  const tags = (text) => JSON.stringify([...text.matchAll(htmlTokens)].map((match) => normalizedTag(match[0])));
+  if (tags(input.join("\n")) !== tags(fragments.flat().join("\n"))) return null;
+  const traced = htmlGroupPaths(fragments, flavor);
+  if (!traced) return null;
+  const { elements, paths } = traced;
+  // まとまりの外の table に属する部品だけでは、表全体の字下げをそろえられない。
+  if (elements.some((element) => tableParts.has(element.name) && !element.table)) return null;
+  const zero = new Set();
+  let index = 0;
+  for (const fragment of fragments) {
+    if (!paths[index].tag) return null;
+    paths[index].path.forEach((element) => zero.add(element));
+    index += fragment.length;
+  }
+  for (const element of elements) {
+    const table = element.table;
+    if (tableParts.has(element.name) && zero.has(table) && table.openFragment !== table.closeFragment) zero.add(element);
+  }
+  if ([...zero].some((element) => !element.leading)) return null;
+  index = 0;
+  for (const fragment of fragments) {
+    for (let line = 0; line < fragment.length; line++, index++) {
+      const { path, indent, exact } = paths[index];
+      const ancestor = path.findLast((element) => zero.has(element));
+      if (!exact && ancestor) {
+        if (indent < ancestor.indent) return null;
+        fragment[line] = fragment[line].slice(ancestor.indent);
+      }
+      if (line === 0 && /^[ \t]/u.test(fragment[line])) return null;
+    }
+  }
+  return fragments;
+}
+
+// 対象にできる種類 6・7 のブロックを集め、同じ親の子を文書の順にたどって開きと閉じを組にする。
+// 対象外の種類 6・7 も数えるが、そのまとまりは変えない。ほかのノードの中のタグは数えない。
+// 断片をまたいだ要素の暗黙の閉じと、親の終わりまで閉じない最初の断片は外す。
 function htmlBlockEdits(source, lines, nodes, selection, beautify, flavor) {
   const protectedRows = titledAlertRows(nodes, flavor);
   const ending = preferredEnding(source);
-  const edits = [];
-  for (const node of nodes) {
+  const blocks = new Map();
+  for (const [index, node] of nodes.entries()) {
     if (nodeType(node) !== "HtmlBlock") continue;
     const { block_type: blockType, literal } = node.data.value.HtmlBlock;
     const position = node.data.sourcepos;
     if ((blockType !== 6 && blockType !== 7) || !position?.start.line || !position?.end.line) continue;
-    if (Array.from({ length: position.end.line - position.start.line + 1 }, (_, index) => position.start.line + index)
+    if (Array.from({ length: position.end.line - position.start.line + 1 }, (_, offset) => position.start.line + offset)
       .some((row) => protectedRows.has(row))) continue;
     const rows = literal.replace(/(?:\r\n|\r|\n)$/u, "").split(/\r\n|\r|\n/u);
     const first = position.start.line;
@@ -1123,19 +1275,90 @@ function htmlBlockEdits(source, lines, nodes, selection, beautify, flavor) {
     const start = lines[first - 1].start;
     const lastLine = lines[first - 2 + rows.length];
     const end = lastLine.start + lastLine.content.length;
-    // 範囲整形では、ブロックの全体 (行頭の入れ物の接頭辞を除く) が選択に入るときだけ。
+    // 範囲整形では、まとまりの全断片 (行頭の入れ物の接頭辞を除く) が選択に入るときだけ。
     if (selection && (start + prefixes[0].length < selection.start || end > selection.end)) continue;
-    // 中身を変えない要素の表は、整形器が書き換えても次のブロックに残らないよう毎回作る。
-    const formatted = beautify(rows.join("\n"), { ...beautifyOptions, content_unformatted: [...flavor.whitespaceElements] });
-    if (typeof formatted !== "string") throw new Error("HTML の整形器が文字列を返しませんでした。");
-    const output = formatted.split(/\r\n|\r|\n/u);
-    // 空の行はブロックを終わらせ、後ろの行を Markdown にするので当てない。
-    if (formatted === rows.join("\n") || output.some((row) => !row.trim())) continue;
-    // 2 行目からの接頭辞は元の 2 行目のもの。1 行だったブロックは、1 行目の接頭辞の > 以外 (リストの印など) を空白にする
-    // (脚注の定義のように、続きの行の字下げが 1 行目の接頭辞と違う入れ物では外れる。当てた後の literal の確かめで外す)。
-    const continuation = rows.length > 1 ? prefixes[1] : prefixes[0].replace(/[^>]/gu, " ");
-    const replacement = output.map((row, index) => (index ? continuation : prefixes[0]) + row).join(ending);
-    edits.push({ start, end, replacement, line: first, rows: rows.length, output });
+    blocks.set(index, { rows, prefixes, start, end, line: first });
+  }
+  const edits = [];
+  // 閉じないブロックの後ろから数え直すときに、同じ literal を読み直さないよう、タグを 1 回だけ読む。
+  const tagLists = new Map();
+  const tagsOf = (index, raw = null) => {
+    if (!tagLists.has(index)) {
+      const rawStart = raw;
+      const tags = [];
+      for (const match of nodes[index].data.value.HtmlBlock.literal.matchAll(htmlTokens)) {
+        const tag = htmlTag(match[0]);
+        if (!tag) continue;
+        const nextRaw = htmlRawText(raw, tag.name, tag.closing);
+        if (raw && nextRaw) continue;
+        raw = nextRaw;
+        if (!tag.empty) tags.push(tag);
+      }
+      tagLists.set(index, { tags, raw, rawStart });
+    }
+    return tagLists.get(index);
+  };
+  for (let parent = 0; parent < nodes.length; parent++) {
+    const children = childIndices(nodes, parent).filter((index) => {
+      const html = nodes[index].data.value.HtmlBlock;
+      return html && (html.block_type === 6 || html.block_type === 7);
+    });
+    // 同じ親の断片へ生の文字の状態も渡し、タグの読み取りは一度で済ませる。
+    let raw = null;
+    for (const index of children) raw = tagsOf(index, raw).raw;
+    let skipped = [];
+    for (let first = 0; first < children.length;) {
+      const stack = [];
+      const outside = [...skipped];
+      const group = [];
+      let remainder;
+      // 見送った生の文字の中から始まる断片は、独立した HTML として整形しない。
+      let valid = !tagsOf(children[first]).rawStart;
+      let last = first;
+      for (; last < children.length; last++) {
+        const index = children[last];
+        group.push(blocks.get(index));
+        if (!blocks.has(index)) valid = false;
+        for (const tag of tagsOf(index).tags) {
+          if (!tag.closing) {
+            stack.push({ name: tag.name, fragment: index });
+            continue;
+          }
+          const open = stack.findLastIndex((element) => element.name === tag.name);
+          if (open < 0) {
+            // 見送った断片を閉じるブロックは、単独の HTML として整形しない。
+            const previous = outside.findLastIndex((element) => element.name === tag.name);
+            if (previous >= 0) {
+              outside.splice(previous);
+              valid = false;
+            }
+            // ほかの開きの無い閉じは探索では無視する。複数の断片なら htmlGroupPaths が拒む。
+            continue;
+          }
+          // 同じ断片で開いたものだけは緩く閉じる。前の断片の要素は、一番上で明示的に閉じる必要がある。
+          if (open !== stack.length - 1 && stack.slice(open).some((element) => element.fragment !== index)) valid = false;
+          stack.splice(open);
+        }
+        if (last === first) remainder = [...outside, ...stack];
+        if (!stack.length) break;
+      }
+      if (stack.length) {
+        // 最初の断片に残った要素だけを記録する。失敗した先読みの後半の状態は確定しない。
+        skipped = remainder;
+        first++;
+        continue;
+      }
+      skipped = outside;
+      first = last + 1;
+      if (!valid) continue;
+      const output = group.length === 1
+        ? [beautifiedHtmlRows(group[0].rows.join("\n"), beautify, flavor)]
+        : htmlGroupOutput(group, beautify, flavor);
+      if (output && output.every(Boolean)) {
+        const fragments = group.map((block, part) => htmlFragmentEdit(block, output[part], ending)).filter(Boolean);
+        if (fragments.length) edits.push({ fragments });
+      }
+    }
   }
   return edits;
 }
@@ -1150,7 +1373,7 @@ function htmlEditsLanded(nodes, edits) {
     }
   }
   let shift = 0;
-  return [...edits].sort((a, b) => a.start - b.start).every((edit) => {
+  return edits.flatMap((unit) => unit.fragments).sort((a, b) => a.start - b.start).every((edit) => {
     const literal = literals.get(edit.line + shift);
     shift += edit.output.length - edit.rows;
     return literal !== undefined &&
@@ -1159,7 +1382,7 @@ function htmlEditsLanded(nodes, edits) {
 }
 
 function applyHtmlEdits(source, edits) {
-  return [...edits].sort((a, b) => b.start - a.start)
+  return edits.flatMap((unit) => unit.fragments).sort((a, b) => b.start - a.start)
     .reduce((text, { start, end, replacement }) => text.slice(0, start) + replacement + text.slice(end), source);
 }
 
@@ -1169,17 +1392,34 @@ function applyHtmlEdits(source, edits) {
 //    リストの tight の変化を見つける)
 // 3. GitLab の記法: 原文と並びを比べる
 // 4. 整形したブロックの literal が整形の結果と同じ (2 回目の整形で変わらない)
-// まとめて当てて 1 回で確かめ、変わるときだけ半分に分けて原因のブロックを外す。ブロックどうしは重ならない。
-// Markdown をはさんだ断片 (<details> と </details> の間に本文があるものなど) は、断片ごとに入れ物の字下げから整形する。
-// 前の断片の深さを持ち越して 1 行目を 4 つ以上字下げすると、空行の後ではコードブロックになるため。
+// まとめて当てて 1 回で確かめ、変わるときだけ単位で半分に分けて外す。Markdown をはさむまとまりは分けない。
+// まとまりは文脈をつないで整形し、断片の先頭の要素と祖先を入れ物の字下げにそろえる。1 行目を 4 つ以上
+// 字下げすると、空行の後ではコードブロックになり、リストの項目に取り込まれることもあるため。
 function formatHtmlBlocks(source, { parse, render, beautify, selection, exhaustive, flavor }) {
   if (!exhaustive && !htmlBlockHint.test(source)) return source;
   const lines = linesOf(source);
   const edits = htmlBlockEdits(source, lines, parse(parsedText(source, lines, flavor).text), selection, (text, settings) => beautify()(text, settings), flavor);
   if (!edits.length) return source;
-  const htmlTree = (node) => (node[0] === "HtmlBlock"
-    ? [node[0], { block_type: node[1].block_type, html: normalizedHtml(node[1].literal, flavor) }, node[2]]
-    : node);
+  // 構造の比較でも、同じ親の断片から table の文脈を持ち越す。閉じ断片だけを正規化すると、
+  // </td>・</tr> の間の改行を表の外の文字の空白として扱い、安全な行分けまで拒んでしまうため。
+  const htmlTree = ([type, value, children], tables = 0, raw = null) => {
+    let depth = tables;
+    let rawText = raw;
+    const mapped = children.map((child) => {
+      const result = htmlTree(child, depth, rawText);
+      if (child[0] === "HtmlBlock" && (child[1].block_type === 6 || child[1].block_type === 7)) {
+        for (const match of child[1].literal.matchAll(htmlTokens)) {
+          const tag = htmlTag(match[0]);
+          if (!tag) continue;
+          if (tag.name === "table" && !tag.empty && !rawText) depth = Math.max(0, depth + (tag.closing ? -1 : 1));
+          rawText = htmlRawText(rawText, tag.name, tag.closing);
+        }
+      }
+      return result;
+    });
+    return [type, type === "HtmlBlock"
+      ? { block_type: value.block_type, html: normalizedHtml(value.literal, flavor, tables, raw) } : value, mapped];
+  };
   const snapshot = (text, applied) => {
     const textLines = linesOf(text);
     const { matter, text: parsed } = parsedText(text, textLines, flavor);
@@ -1189,7 +1429,7 @@ function formatHtmlBlocks(source, { parse, render, beautify, selection, exhausti
       matter?.raw || null,
       [...text.matchAll(flavor.atoms)].map((match) => match[0]),
       normalizedHtml(render(parsed), flavor),
-      mapTree(canonicalNode(nodes, 0), htmlTree),
+      htmlTree(canonicalNode(nodes, 0)),
     ]);
   };
   const expected = snapshot(source);
