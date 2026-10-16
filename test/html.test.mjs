@@ -590,6 +590,9 @@ test("描画の比較の正規化", () => {
     // svg・math の中では、空要素の名前の要素も中を持ちうる。
     ['<math><link style="white-space: pre"><mtext>a   b</mtext></link></math>',
       '<math><link style="white-space: pre"><mtext>a b</mtext></link></math>'],
+    // 違う名前の閉じタグ (</svg>) は math を閉じない。
+    ['<math></svg><link style="white-space: pre">a   b</link></math>',
+      '<math></svg><link style="white-space: pre">a b</link></math>'],
   ];
   for (const [a, b] of different) assert.notEqual(normalizedHtml(a), normalizedHtml(b), `${a} と ${b} は別の描画`);
 });

@@ -1150,8 +1150,9 @@ function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw) {
   // tables は、前の断片から開いている table の数。表の部品は、table の中でだけ空白の境にする。
   // 空白がそのまま出る要素の、開いているものの名前と、同じ名前の入れ子の深さ。
   const exact = [];
-  // 開いている svg・math の数 (広めに数える)。その中では、空要素の名前の要素も中を持ちうる。
-  let foreign = 0;
+  // 開いている svg・math の名前 (広めに数える)。その中では、空要素の名前の要素も中を持ちうる。
+  // 閉じタグは一番内側と同じ名前のときだけ外す (<math></svg> は math を閉じない)。
+  const foreign = [];
   const pushText = (text) => {
     if (text) items.push(exact.length ? ["raw", text] : ["text", text.replace(/[ \t\n\f\r]+/gu, " ")]);
   };
@@ -1171,11 +1172,14 @@ function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw) {
     const dropped = (tableParts.has(lower) && !tables) || (slash && voidElements.has(lower) && lower !== "br");
     items.push(["tag", normalizedTag(token), blockElements.has(lower) && !dropped]);
     if (lower === "table" && !rawText) tables = Math.max(0, tables + (slash ? -1 : 1));
-    if (lower === "svg" || lower === "math") foreign = Math.max(0, foreign + (slash ? -1 : 1));
+    if (lower === "svg" || lower === "math") {
+      if (!slash) foreign.push(lower);
+      else if (foreign.at(-1) === lower) foreign.pop();
+    }
     const open = exact.at(-1);
     if (slash) {
       if (open?.name === lower && --open.depth === 0) exact.pop();
-    } else if (!voidElements.has(lower) || foreign) {
+    } else if (!voidElements.has(lower) || foreign.length) {
       // 空要素でない HTML の要素は、/> でも開く。
       if (open?.name === lower) open.depth++;
       else if (htmlWhitespaceElement(lower, token, flavor)) {
