@@ -8,12 +8,7 @@ GFM と GLFM の Markdown を、描画を変えずに整形する `mdfmt` コマ
 
 ## 導入手順の正本
 
-Windows 11・AlmaLinux 10 の導入・利用・更新・任意操作は、setup-notes の [windows-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/windows-setup.md) と [almalinux-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/almalinux-setup.md) に集約する。既存の手順も対象とする。
-
-- 固有の仕様・他 OS の手順・開発者検査・理由・注意・検証記録・ロールバックが残る文書は保持する
-- 案内だけになった旧文書は削除する。README から上の2冊と[集約対応表](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/dev/consolidation-map.md)へ案内する
-
-文書規則は、Windows・AlmaLinux の実行手順には上の正本へ適用する。操作や移動先を変えたら正本・README・集約対応表・参照情報を同期し、過去の検証本文は保持する。
+Windows 11・AlmaLinux 10 の導入・更新・使い方の手順は、setup-notes の [almalinux-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/almalinux-setup.md#md-format) と [windows-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/windows-setup.md#md-format) の「md-format」とその子の項にある。このリポジトリには置かない。README の導入の概要と使い方、導入スクリプト（`scripts/setup.mjs`）、ルールの例・設計・検証記録（`docs/`）は、このリポジトリに置く。導入や使い方の操作を変えたら、README と正本の手順を合わせる（正本は setup-notes の Pull Request で直す）。
 
 ## 構成
 
@@ -74,4 +69,4 @@ git diff --check
 - Claude Code から頼まれたエージェントは、上の自分の役割の範囲で作業する
 - レビューの指摘は、実物で確かめてから採る。採らなかった指摘は、理由を付けて報告する
 - 使えないエージェント（入っていない・ログインが切れた・AlmaLinux 10 の Antigravity CLI）は飛ばし、そのことを報告する
-- 頼み方は、setup-notes（https://github.com/ryo-aoki-pc/setup-notes）の `docs/ai-agents.md` の「コーディングエージェントの共同作業: 既定で分担する」と、`docs/reference/coding-agents.md` の「既定の分担」
+- 頼み方は、[setup-notes](https://github.com/ryo-aoki-pc/setup-notes) の `docs/ai-agents.md` の「コーディングエージェントの共同作業: 既定で分担する」と、`docs/reference/coding-agents.md` の「既定の分担」
