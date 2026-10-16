@@ -192,6 +192,25 @@ test("対象外のセルと描画の違うセルは HTML のまま残す", async
   ]) await assertFormats(options, input, input, name);
 });
 
+test("CommonMark の形でないセルのタグと中のタグは、Markdown に変えない", async (t) => {
+  const options = { ...await project(t), fixes: { html: false } };
+  for (const flavor of ["glfm", "gfm"]) {
+    const settings = { ...options, flavor };
+    for (const html of [
+      '<a/href="u0">リンク</a><img src=a0.png>',
+      '<a href="u0"/title="v">リンク</a><img src=a0.png>',
+      '<a title="t0"href="u0">リンク</a><img src=a0.png>',
+      '<a href="u0">リンク</a\u00a0><img src=a0.png>',
+    ]) await assertFormats(settings, table(html), table(html), flavor + ": 中のタグ: " + html);
+    for (const tag of ["td", "th"]) {
+      const opening = lines('<table><tr><' + tag + ' title="t0"data-x=y><img src=a0.png></' + tag + '></tr></table>');
+      await assertFormats(settings, opening, opening, flavor + ": " + tag + " の開きタグの属性の間の空白");
+      const closing = lines("<table><tr><" + tag + "><img src=a0.png></" + tag + "/></tr></table>");
+      await assertFormats(settings, closing, closing, flavor + ": " + tag + " の閉じタグの /");
+    }
+  }
+});
+
 test("成り立たない強調とつながる区切りは HTML のまま残す", async (t) => {
   const options = await project(t);
   for (const flavor of ["glfm", "gfm"]) {

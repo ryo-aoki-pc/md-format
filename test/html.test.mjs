@@ -230,10 +230,9 @@ test("Markdown をはさむ div と祖先の details をそろえ、summary は 
   const input = lines("<details><summary>概要</summary><div>", "", "本文 **太字**", "", "</div></details>");
   const expected = lines("<details>", "  <summary>概要</summary>", "<div>", "", "本文 **太字**", "", "</div>", "</details>");
   await assertFormats(options, input, expected, "details の中の div");
-  await assertFormats(options,
-    lines("<details>", "<summary>概要</summary><div>", "", "本文", "", "</div/>", "</details>"),
-    lines("<details>", "  <summary>概要</summary>", "<div>", "", "本文", "", "</div />", "</details>"),
-    "閉じタグの / があってもまとまりを閉じる");
+  const slashClosing = lines("<details>", "<summary>概要</summary><div>", "", "本文", "", "</div/>", "</details>");
+  // 積み上げでは閉じタグとして読むが、CommonMark の形でないタグは原文のまま比べ、書き換えを当てない。
+  await assertFormats(options, slashClosing, slashClosing, "CommonMark の形でない閉じタグを含むまとまりは保つ");
 });
 
 test("続くまとまりと、1 ブロックで閉じる HTML は、それぞれの決まりで整形する", async (t) => {
@@ -501,6 +500,15 @@ test("生の文字や空要素でない要素の空白を変える整形は当�
   for (const [name, input] of unchanged) await assertFormats(options, input, input, name);
 });
 
+test("CommonMark の形でない属性のタグは、HTML とセルの整形でも原文を保つ", async (t) => {
+  const options = await project(t);
+  const link = lines('<div><p><a href="u0"/title="v">x</a></p></div>');
+  await assertFormats(options, link, link, "引用符の直後の / で区切った属性");
+  const cell = lines('<table><tr><td class=c0 title="t0"data-x=y><img src=a0.png alt=x><a href="u0"/title=v>リンク</a></td></tr></table>');
+  await assertFormats({ ...options, fixes: { ...options.fixes, html_cells: true } }, cell, cell,
+    "CommonMark の形でないセルとリンクを既定の分類でも保つ");
+});
+
 test("空要素の white-space は後ろの HTML の整形を止めない", async (t) => {
   const options = await project(t);
   await assertFormats(options,
@@ -562,15 +570,9 @@ test("描画の比較の正規化", () => {
   const same = [
     ["<br/>", "<br />"],
     ["<a x=/ >", "<a x=/>"],
-    ["<a x= >", "<a x=>"],
-    ["<a ==x>", "<a = = x>"],
-    ["<xmp/foo>a</xmp>", "<xmp /foo>a</xmp>"],
-    ['<a title="x"href="y">z</a>', '<a title="x" href="y">z</a>'],
     ['<div\u00a0style="white-space: pre">a   b</div>', '<div\u00a0style="white-space: pre">a b</div>'],
     ["<pre\u00a0x>a   b</pre\u00a0x>", "<pre\u00a0x>a b</pre\u00a0x>"],
     ['<div ſtyle="white-space: pre">a   b</div>', '<div ſtyle="white-space: pre">a b</div>'],
-    ['<x_y title = "x">z</x_y>', '<x_y title="x">z</x_y>'],
-    ['<div.x title = "x">z</div.x>', '<div.x title="x">z</div.x>'],
     ["<p>a<!-- x --!>  b <!-- y --></p>", "<p>a<!-- x --!> b <!-- y --></p>"],
     ["<p><!--->  a<!-- --></p>", "<p><!---> a<!-- --></p>"],
     ["<p>a<!-->  b</p>", "<p>a<!--> b</p>"],
@@ -591,6 +593,17 @@ test("描画の比較の正規化", () => {
   ];
   for (const [a, b] of same) assert.equal(normalizedHtml(a), normalizedHtml(b), `${a} と ${b} は同じ描画`);
   const different = [
+    // GitHub は / で区切った属性を落とすなど、WHATWG と違う読み方をするので、CommonMark の形でないタグは原文のまま比べる。
+    ["<a x= >", "<a x=>"],
+    ["<a ==x>", "<a = = x>"],
+    ["<xmp/foo>a</xmp>", "<xmp /foo>a</xmp>"],
+    ['<a title="x"href="y">z</a>', '<a title="x" href="y">z</a>'],
+    ['<x_y title = "x">z</x_y>', '<x_y title="x">z</x_y>'],
+    ['<div.x title = "x">z</div.x>', '<div.x title="x">z</div.x>'],
+    ['<div><p><a/href="u0">x</a></p></div>', '<div><p><a /href="u0">x</a></p></div>'],
+    ['<div><p><a href="u0"/title="v">x</a></p></div>', '<div><p><a href="u0" title="v">x</a></p></div>'],
+    ["a <div/x> b", "a<div/x>b"],
+    ["<div>a</div/> b", "<div>a</div /> b"],
     // 原文を読む側では xmp が閉じても、タグとして読む側ではコメントの中で閉じず、後ろの空白の差を残す。
     ["<xmp><!--</xmp>-->  a  b", "<xmp><!--</xmp>--> a b"],
     ["<div><listing>a   b</listing></div>", "<div><listing>a b</listing></div>"],
@@ -691,15 +704,23 @@ test("セルの描画の比較でも、HTML と同じ区切りで属性を読む
   const semantic = { decodeHTML, decodeHTMLAttribute };
   const normalized = (html) => normalizedHtml(html, undefined, 0, null, semantic);
   const same = [
+    ["<a title=x\u00a0y>z</a>", '<a title="x\u00a0y">z</a>'],
+  ];
+  for (const [a, b] of same) assert.equal(normalized(a), normalized(b), a + " と " + b + " は同じ属性");
+  const different = [
+    // 閉じタグも CommonMark の形を満たすときだけ、裸の URL と同じリンクとして扱う。
+    ['<a href="https://example.com">https://example.com</a\u00a0>',
+      '<a href="https://example.com">https://example.com</a>'],
+    // GitHub は / で区切った属性を落とすなど、WHATWG と違う読み方をするので、CommonMark の形でないタグは原文のまま比べる。
     ['<a/href="x">z</a>', '<a href="x">z</a>'],
     ['<a title="x"HREF="y">z</a>', '<a href="y" title="x">z</a>'],
     ['<a/HREF="x" href="y">z</a>', '<a href="x">z</a>'],
     ['<X_Y TITLE="x">z</X_Y>', '<x_y title="x">z</x_y>'],
-    ["<a title=x\u00a0y>z</a>", '<a title="x\u00a0y">z</a>'],
     ['<a =b>x</a>', '<a =b="">x</a>'],
-  ];
-  for (const [a, b] of same) assert.equal(normalized(a), normalized(b), a + " と " + b + " は同じ属性");
-  const different = [
+    ['<div><p><a/href="u0">x</a></p></div>', '<div><p><a /href="u0">x</a></p></div>'],
+    ['<div><p><a href="u0"/title="v">x</a></p></div>', '<div><p><a href="u0" title="v">x</a></p></div>'],
+    ["a <div/x> b", "a<div/x>b"],
+    ["<div>a</div/> b", "<div>a</div /> b"],
     ['<a/href="x">z</a>', '<a/href="y">z</a>'],
     ['<a title="x"href="y">z</a>', '<a title="x"href="z">z</a>'],
     ['<a/HREF="x" href="y">z</a>', '<a href="y">z</a>'],

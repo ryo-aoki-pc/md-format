@@ -1040,6 +1040,12 @@ const htmlPieceTokens = new RegExp(htmlTokens);
 const htmlCdataTokens = new RegExp(String.raw`<!\[CDATA\[[\s\S]*?(?:\]\]>|$)|` + htmlTokens.source, "gu");
 const htmlTokenAt = new RegExp(htmlTokens.source, "uy");
 
+// CommonMark のタグの形。GitHub などが別の読み方をするタグは、原文のまま比べる。
+const commonMarkHtmlTag = new RegExp(
+  String.raw`^(?:<[A-Za-z][A-Za-z0-9-]*(?:[\t\n\f\r ]+[A-Za-z_:][A-Za-z0-9_.:-]*` +
+  String.raw`(?:[\t\n\f\r ]*=[\t\n\f\r ]*(?:[^\t\n\f\r "'=<>\x60]+|'[^']*'|"[^"]*"))?)*[\t\n\f\r ]*/?>|` +
+  String.raw`</[A-Za-z][A-Za-z0-9-]*[\t\n\f\r ]*>)$`, "u");
+
 // HTML は ASCII の英字だけを小文字にする (K などを別の名前に変えない)。
 function htmlLowerCase(value) {
   return value.replace(/[A-Z]/gu, (letter) => letter.toLowerCase());
@@ -1064,7 +1070,7 @@ function htmlTagParts(token) {
     attributes.push({ name: attribute[1], value: attribute[2] ?? null });
     offset = htmlAttributeAt.lastIndex;
   }
-  return { name: match[2], closing: Boolean(match[1]), attributes, selfClosing };
+  return { name: match[2], closing: Boolean(match[1]), attributes, selfClosing, commonMark: commonMarkHtmlTag.test(token) };
 }
 
 // 値の外の引用符だけを取り除く。実体参照は呼び出し側で戻す。
@@ -1078,11 +1084,12 @@ const tableParts = new Set(["caption", "col", "colgroup", "tbody", "td", "tfoot"
 // 空要素。HTML の解析は、これらの閉じタグを捨てる (</br> だけは <br> と読む)。
 const voidElements = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
 
-// タグの部品を並べ直し、属性の区切りと = の前後の空白だけをそろえる。
+// CommonMark の形のタグは部品を並べ直し、属性の区切りと = の前後の空白だけをそろえる。それ以外のタグは原文のまま。
 // semantic のときだけ、描画で同じになる属性の並び・引用符・実体参照もそろえる。
 function normalizedTag(token, semantic = null, foreign = false) {
   const parts = htmlTagParts(token);
   if (parts) {
+    if (!parts.commonMark) return token;
     if (semantic) {
       const tag = semanticHtmlTag(token, semantic);
       return JSON.stringify([tag.closing, tag.name, tag.attributes, tag.selfClosing && (foreign || !voidElements.has(tag.name))]);
@@ -1123,7 +1130,7 @@ function semanticHtmlAutolink(pieces, index, semantic) {
   if (opening.closing || opening.name !== "a" || opening.attributes.length !== 1 || opening.attributes[0][0] !== "href") return null;
   const text = pieces[index + 1];
   const closing = pieces[index + 2];
-  if (!text || text.token !== undefined || text.raw || !closing?.token || !/^<\/a\s*>$/iu.test(closing.token)) return null;
+  if (!text || text.token !== undefined || text.raw || !closing?.token || !commonMarkHtmlTag.test(closing.token) || !/^<\/a\s*>$/iu.test(closing.token)) return null;
   const value = semantic.decodeHTML(text.text);
   const target = opening.attributes[0][1];
   // Comrak は、前が空白・行頭・*_~( でない所と、後に文字や数字が続く所では、裸の URL をリンクにしない。
@@ -1241,6 +1248,7 @@ function htmlWhitespaceElement(name, token, flavor) {
 //    空要素でない要素は /> でも開く (HTML の要素の / は無視される。svg・math の中で閉じるものを開くと数えても、厳しくなるだけ)
 // 7. data 状態のタグ・コメント・処理命令・偽のコメントは HTML の字句解析の区切りで読み、引用符の無い値の / と閉じの印、ASCII の空白とそれ以外を分ける。
 // 8. <![CDATA[ があれば、svg・math のために ]]> (無ければ終わり) までを原文のまま比べる読み方も、タグとして読む側に加える。
+// 9. GitHub は / で区切った属性を落とすなど、WHATWG と違う読み方をするので、CommonMark の形でないタグは原文のまま比べ、空白の境にしない。
 function normalizedHtml(html, flavor = flavors.glfm, tables = 0, raw = null, semantic = null) {
   const text = normalizedHtmlValue(html, flavor, tables, raw, false, semantic);
   const cdata = html.includes("<![CDATA[");
@@ -1286,7 +1294,7 @@ function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw, semantic = nu
     const { name: lower, closing: slash } = tag;
     // </br> は <br> と読まれるので、境のままにする。
     const dropped = (tableParts.has(lower) && !tables) || (slash && voidElements.has(lower) && lower !== "br");
-    if (semantic && !rawText && !foreign.length && !exact.length && lower === "a" && !slash) {
+    if (tag.commonMark && semantic && !rawText && !foreign.length && !exact.length && lower === "a" && !slash) {
       const autolink = semanticHtmlAutolink(pieces, index, semantic);
       if (autolink !== null) {
         pushText(autolink);
@@ -1294,7 +1302,9 @@ function normalizedHtmlValue(html, flavor, tables, raw, tagsInRaw, semantic = nu
         continue;
       }
     }
-    items.push(["tag", normalizedTag(token, semantic, foreign.length > 0 || lower === "svg" || lower === "math"), blockElements.has(lower) && !dropped]);
+    if (tag.commonMark) {
+      items.push(["tag", normalizedTag(token, semantic, foreign.length > 0 || lower === "svg" || lower === "math"), blockElements.has(lower) && !dropped]);
+    } else items.push(["markup", token]);
     if (lower === "table" && !rawText) tables = Math.max(0, tables + (slash ? -1 : 1));
     if (lower === "svg" || lower === "math") {
       if (!slash) foreign.push(lower);
@@ -1332,7 +1342,8 @@ function htmlTag(token) {
   const parts = htmlTagParts(token);
   if (!parts) return null;
   const name = htmlLowerCase(parts.name);
-  return { name, closing: parts.closing, empty: voidElements.has(name) || (!parts.closing && parts.selfClosing && !rawTextElements.has(name)) };
+  return { name, closing: parts.closing, commonMark: parts.commonMark,
+    empty: voidElements.has(name) || (!parts.closing && parts.selfClosing && !rawTextElements.has(name)) };
 }
 
 // 整形器の結果を行に分ける。空行は HTML のブロックを終わらせるので当てない。
@@ -1720,7 +1731,7 @@ function cellTree(html, dependencies, flavor) {
       continue;
     }
     const tag = htmlTag(token);
-    if (!tag || rawTextElements.has(tag.name) || tag.name === "table" || /^h[1-6]$/u.test(tag.name)) return null;
+    if (!tag || !tag.commonMark || rawTextElements.has(tag.name) || tag.name === "table" || /^h[1-6]$/u.test(tag.name)) return null;
     if (tag.closing) {
       if (tag.empty || stack.length === 1 || stack.at(-1).name !== tag.name) return null;
       stack.pop().close = token;
@@ -2117,11 +2128,11 @@ function markdownCellEdits(source, lines, nodes, selection, flavor, dependencies
         if (tag.name !== "td" && tag.name !== "th") continue;
         if (!tag.closing) {
           if (open) { open.invalid = true; continue; }
-          if (tables && !tag.empty && !excluded) open = { name: tag.name, token: piece.token, start: offset };
+          if (tables && !tag.empty && !excluded) open = { name: tag.name, token: piece.token, start: offset, invalid: !tag.commonMark };
           continue;
         }
         if (!open) continue;
-        if (open.name !== tag.name || open.invalid) { open = null; continue; }
+        if (open.name !== tag.name || open.invalid || !tag.commonMark) { open = null; continue; }
         const valueOfCell = cellMarkdown(literal.slice(open.start, begin), { flavor, styles, dependencies });
         if (valueOfCell) {
           const start = actualOffset(open.start);
