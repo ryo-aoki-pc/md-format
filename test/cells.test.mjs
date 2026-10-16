@@ -173,6 +173,8 @@ test("対象外のセルと描画の違うセルは HTML のまま残す", async
     ["守る記法の中の記号", "<code>x</code> [[a_b]]"],
     ["同種の隣り合うリスト", "<ul><li>一</li></ul><ul><li>二</li></ul>"],
     ["0 と 1 以外の開始番号", '<ol start="3"><li>三</li><li>四</li></ol>'],
+    ["行頭に出る include", "<p>::include{file=a.md}</p>"], ["引用の行頭の include", "<blockquote>::include{file=a.md} <code>x</code></blockquote>"],
+    ["項目の行頭の include", "<ul><li>::include{file=a.md}</li></ul>"],
     ["段落が混ざる項目", "<ul><li>一</li><li><p>二</p></li></ul>"],
     ["説明の複数ブロック", "<dl><dt>語</dt><dd><p>一</p><p>二</p></dd></dl>"],
   ];
@@ -451,4 +453,14 @@ test("全角空白と NBSP を文字として保ち、リストの間の文字�
       await assertFormats({ ...options, flavor }, input, input, flavor + ": 項目の間の文字を残す");
     }
   }
+});
+
+test("GLFM の行頭の ::include は HTML のまま残し、GFM と [TOC] は Markdown にする", async (t) => {
+  const options = { ...await project(t), fixes: { html: false } };
+  // ::include は、Markdown の行頭でだけ働く (HTML のブロックの中では働かない)。GFM には無い記法なので、文字として Markdown にする。
+  await assertFormats({ ...options, flavor: "gfm" }, table("<p>::include{file=a.md}</p>"), compactTable("::include{file=a.md}"), "GFM の include");
+  // GitLab は、HTML の <p>[TOC]</p> も Markdown の [TOC] の段落も目次にする (2026-10-16 に gitlab.com の Markdown API で確かめた)。
+  await assertFormats(options, table("<p>[TOC]</p>"), compactTable("[TOC]"), "GLFM の目次");
+  // 行の途中の ::include は働かないので、ほかのセルと同じく Markdown にする。
+  await assertFormats(options, table("<code>x</code> と ::include{file=a.md}"), compactTable("`x` と ::include{file=a.md}"), "行の途中の include");
 });

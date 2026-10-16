@@ -1087,7 +1087,16 @@ function semanticHtmlAutolink(pieces, index, semantic) {
   if (!text || text.token !== undefined || text.raw || !closing?.token || !/^<\/a\s*>$/iu.test(closing.token)) return null;
   const value = semantic.decodeHTML(text.text);
   const target = opening.attributes[0][1];
-  return target === value || target === "http://" + value || target === "mailto:" + value ? value : null;
+  // Comrak は、前が空白・行頭・*_~( でない所と、後に文字や数字が続く所では、裸の URL をリンクにしない。
+  const before = pieces[index - 1];
+  const after = pieces[index + 3];
+  if (before && before.token === undefined && !/(?:^|[\s*_~(])$/u.test(semantic.decodeHTML(before.text))) return null;
+  if (after && after.token === undefined && /^[\p{L}\p{N}]/u.test(semantic.decodeHTML(after.text))) return null;
+  // 文字が URL・www.・メールの形のときだけ外す (ほかの文字のリンクは、許す差の外の違い)。
+  if (target === value && /^(?:https?|ftp):\/\/\S+$/iu.test(value)) return value;
+  if (target === "http://" + value && /^www\.\S+$/iu.test(value)) return value;
+  if (target === "mailto:" + value && /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/u.test(value)) return value;
+  return null;
 }
 
 // 生の文字として読む要素の中の <table> は、表の深さに数えない。
@@ -1983,7 +1992,10 @@ function cellMarkdown(html, { flavor, styles, dependencies }) {
   try {
     const value = sequence(tree.children);
     if (!changed || !value.markdown) return null;
-    return { lines: value.markdown.split("\n"), expected: value.expected };
+    const lines = value.markdown.split("\n");
+    // GLFM の ::include は行頭 (入れ物の印の後を含む) に書いたときだけ働く。HTML の中では働かないので、行頭に出るセルは変えない。
+    if (flavor.descriptionProjection && lines.some((line) => /^[ \t>]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*::include\{/u.test(line))) return null;
+    return { lines, expected: value.expected };
   } catch {
     return null;
   }

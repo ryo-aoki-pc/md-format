@@ -62,7 +62,7 @@ test("セルの描画の正規化は、文字と行き先の同じ裸の URL・w
     ['<p><a href="http://www.example.com">www.example.com</a></p>', '<p>www.example.com</p>'],
     ['<p><a href="mailto:a@example.com">a@example.com</a></p>', '<p>a@example.com</p>'],
     ['<p><a href="https://%E4%BE%8B.jp">https://例.jp</a></p>', '<p>https://例.jp</p>'],
-    ['<p>a<a href="https://example.com">https://example.com</a>b</p>', '<p>ahttps://example.comb</p>'],
+    ['<p>(<a href="https://example.com">https://example.com</a>)</p>', '<p>(https://example.com)</p>'],
   ];
   for (const [a, b] of same) assert.equal(normalized(a), normalized(b), a + " と " + b);
   const different = [
@@ -72,6 +72,13 @@ test("セルの描画の正規化は、文字と行き先の同じ裸の URL・w
     ['<a href="https://example.com">https://example.com<!-- c --></a>', 'https://example.com<!-- c -->'],
     ['<a href="https://www.example.com">www.example.com</a>', 'www.example.com'],
     ['<svg><a href="https://example.com">https://example.com</a></svg>', '<svg>https://example.com</svg>'],
+    // 文字が URL・www.・メールの形でないリンクと、Comrak が裸の URL をリンクにしない前後の文字。
+    ['<p><a href="hello">hello</a></p>', '<p>hello</p>'],
+    ['<p><a href="http://example.com">example.com</a></p>', '<p>example.com</p>'],
+    ['<p><a href="mailto:root">root</a></p>', '<p>root</p>'],
+    ['<p>a<a href="https://example.com">https://example.com</a>b</p>', '<p>ahttps://example.comb</p>'],
+    ['<p>a<a href="https://example.com">https://example.com</a></p>', '<p>ahttps://example.com</p>'],
+    ['<p><a href="https://example.com">https://example.com</a>b</p>', '<p>https://example.comb</p>'],
   ];
   for (const [a, b] of different) assert.notEqual(normalized(a), normalized(b), a + " と " + b);
 });
