@@ -8,7 +8,7 @@ GFM と GLFM の Markdown を、描画を変えずに整形する `mdfmt` コマ
 
 ## 導入手順の正本
 
-Windows 11・AlmaLinux 10 の導入・更新・使い方の手順は、setup-notes の [almalinux-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/almalinux-setup.md#md-format) と [windows-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/windows-setup.md#md-format) の「md-format」とその子の項にある。このリポジトリには置かない。README の導入の概要と使い方、導入スクリプト（`scripts/setup.mjs`）、ルールの例・設計・検証記録（`docs/`）は、このリポジトリに置く。導入や使い方の操作を変えたら、setup-notes の Pull Request で正本の手順も合わせる。
+Windows 11・AlmaLinux 10 の導入・更新・使い方の手順は、setup-notes の [almalinux-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/almalinux-setup.md#md-format) と [windows-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/windows-setup.md#md-format) の「md-format」とその子の項にある。このリポジトリには置かない。README の導入の概要と使い方、導入スクリプト（`scripts/setup.mjs`）、ルールの例・設計・検証記録（`docs/`）は、このリポジトリに置く。導入や使い方の操作を変えたら、README と正本の手順を合わせる（正本は setup-notes の Pull Request で直す）。
 
 ## 構成
 
