@@ -1,8 +1,8 @@
 # md-format の設計
 
-`mdfmt` の設計の理由と取り決め。使い方は [README](../../README.md)、ルールごとの例は [rules.md](rules.md)、検証記録は [../verification/readme.md](../verification/readme.md) にある。
+`mdfmt` の設計の理由と取り決め。使い方は [README](../../README.md)、ルールごとの例は [rules.md](rules.md)、検証記録は [非公開側の readme.md](https://github.com/ryo-aoki-pc/setup-notes-verification/blob/main/repos/md-format/docs/verification/readme.md) にある。
 
-この整形器は、LazyVimStarter の `tools/glfm-format`（`custom` の 7826bd8 まで）から移した。それまでの設計の記録は、LazyVimStarter の `docs/dev/architecture.md` と `docs/verification/setup.md` にある。
+この整形器は、LazyVimStarter の `tools/glfm-format`（`custom` の 7826bd8 まで）から移した。それまでの設計の記録は、LazyVimStarter の `docs/dev/architecture.md` と、非公開の `ryo-aoki-pc/setup-notes-verification` の `repos/LazyVimStarter/docs/verification/setup.md` にある。
 
 ## 整形の流れ
 

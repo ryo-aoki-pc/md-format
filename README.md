@@ -3,7 +3,7 @@
 GFM と GLFM の Markdown を、描画を変えずに整形する `mdfmt` コマンド。
 
 導入・使い方・更新の手順は、setup-notes の [windows-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/windows-setup.md#md-format)（Windows 11）と [almalinux-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/almalinux-setup.md#md-format)（AlmaLinux 10）の「md-format」とその子の項にある。
-ルールごとの例は [docs/reference/rules.md](docs/reference/rules.md)、設計は [docs/reference/readme.md](docs/reference/readme.md)、検証記録は [docs/verification/readme.md](docs/verification/readme.md) にある。
+ルールごとの例は [docs/reference/rules.md](docs/reference/rules.md)、設計は [docs/reference/readme.md](docs/reference/readme.md)、検証記録は [非公開側の readme.md](https://github.com/ryo-aoki-pc/setup-notes-verification/blob/main/repos/md-format/docs/verification/readme.md) にある。
 
 ## できること
 

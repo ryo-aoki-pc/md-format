@@ -4,11 +4,11 @@
 
 利用者への回答・質問・報告は、常に日本語で書く（コードのコメントなどの言語は、このファイルのほかの決まりに従う）。
 
-GFM と GLFM の Markdown を、描画を変えずに整形する `mdfmt` コマンド。使い方は [README.md](README.md)、ルールごとの例は [docs/reference/rules.md](docs/reference/rules.md)、設計の理由は [docs/reference/readme.md](docs/reference/readme.md)、検証記録は [docs/verification/readme.md](docs/verification/readme.md)。Neovim の保存時の整形（conform と予備のプロセスの Lua）は [LazyVimStarter](https://github.com/ryo-aoki-pc/LazyVimStarter) にある。
+GFM と GLFM の Markdown を、描画を変えずに整形する `mdfmt` コマンド。使い方は [README.md](README.md)、ルールごとの例は [docs/reference/rules.md](docs/reference/rules.md)、設計の理由は [docs/reference/readme.md](docs/reference/readme.md)、検証記録は [非公開側の readme.md](https://github.com/ryo-aoki-pc/setup-notes-verification/blob/main/repos/md-format/docs/verification/readme.md)。Neovim の保存時の整形（conform と予備のプロセスの Lua）は [LazyVimStarter](https://github.com/ryo-aoki-pc/LazyVimStarter) にある。
 
 ## 導入手順の正本
 
-Windows 11・AlmaLinux 10 の導入・更新・使い方の手順は、setup-notes の [almalinux-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/almalinux-setup.md#md-format) と [windows-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/windows-setup.md#md-format) の「md-format」とその子の項にある。このリポジトリには置かない。README の導入の概要と使い方、導入スクリプト（`scripts/setup.mjs`）、ルールの例・設計・検証記録（`docs/`）は、このリポジトリに置く。導入や使い方の操作を変えたら、README と正本の手順を合わせる（正本は setup-notes の Pull Request で直す）。
+Windows 11・AlmaLinux 10 の導入・更新・使い方の手順は、setup-notes の [almalinux-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/almalinux-setup.md#md-format) と [windows-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/windows-setup.md#md-format) の「md-format」とその子の項にある。このリポジトリには置かない。README の導入の概要と使い方、導入スクリプト（`scripts/setup.mjs`）、ルールの例・設計（`docs/`）は、このリポジトリに置く。導入や使い方の操作を変えたら、README と正本の手順を合わせる（正本は setup-notes の Pull Request で直す）。
 
 ## 構成
 
@@ -19,7 +19,8 @@ Windows 11・AlmaLinux 10 の導入・更新・使い方の手順は、setup-not
 - `test/` — `node --test` の試験。`reference.test.mjs` は `docs/reference/rules.md` と README の「整形の例」の例をすべて整形し直して確かめる
 - `docs/reference/rules.md` — 分類とルールごとの例（試験が読む。例の書き方は `reference.test.mjs` の決まりに従う）
 - `bench/bench.mjs` — 速さの測り方（比べるコマンドを交互に動かし、中央値と最も遅い値を Markdown の表で出す）
-- `docs/verification/readme.md` — 検証記録（試験・前の整形器との比べ・CLI・導入・速さ）
+- 検証記録（試験・前の整形器との比べ・CLI・導入・速さ）は、非公開の `ryo-aoki-pc/setup-notes-verification` の `repos/md-format/docs/verification/` の `readme.md` に置く
+- 検証記録を書く・直すときは、非公開の `setup-notes-verification` を clone し、そちらへ Pull Request を作る
 
 ## テスト
 
