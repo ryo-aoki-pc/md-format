@@ -12,6 +12,7 @@ const runtimes = new Map();
 const MAX_PASSES = 16;
 const MAX_FIXES = 4096;
 const cellRestarts = Symbol("cellRestarts");
+const warningHistory = Symbol("warningHistory");
 
 const containers = new Set([
   "List", "Item", "TaskItem", "BlockQuote", "MultilineBlockQuote",
@@ -2542,7 +2543,16 @@ export async function formatMarkdown(source, options = {}) {
   }
   const selection = selectedRange(source, options.range);
   if (selection && selection.end < selection.start) throw new Error("整形範囲の開始と終了が逆です。");
-  const selected = fixSelector(options.fixes, options.projectFixes, options.onWarning, options.projectConfigPath);
+  // 外側では従来どおり通知し、整形し直した内側だけ、既に通知した警告の文を省く。
+  const previousWarnings = options[warningHistory];
+  const warned = previousWarnings ?? new Set();
+  const { onWarning } = options;
+  const warn = typeof onWarning === "function" ? (message) => {
+    if (previousWarnings && warned.has(message)) return;
+    warned.add(message);
+    onWarning(message);
+  } : onWarning;
+  const selected = fixSelector(options.fixes, options.projectFixes, warn, options.projectConfigPath);
   settings.observeRules = selected.observeRules;
   const dependencies = await runtime(options.runtimeDir || scriptDirectory);
   // 試験用: exhaustive は近道 (修正候補が無いときの早い終わりと、保護範囲の修正と、詰まったリストに空行を足す修正を
@@ -2789,7 +2799,7 @@ export async function formatMarkdown(source, options = {}) {
         if (retried !== current) {
           const restarts = options[cellRestarts] ?? 0;
           if (restarts >= MAX_PASSES) throw new Error("整形結果が収束しないため中止しました。");
-          return formatMarkdown(retried, { ...options, [cellRestarts]: restarts + 1 });
+          return formatMarkdown(retried, { ...options, [cellRestarts]: restarts + 1, [warningHistory]: warned });
         }
       }
       return finish(current);

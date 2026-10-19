@@ -392,6 +392,28 @@ test("lint 後のセルで整形し直しても警告は 1 回だけ出し、sta
   assert.ok(stats.parses > before.parses && stats.lints > before.lints && stats.renders > before.renders);
 });
 
+test("整形し直しても設定の知らない名前の警告を重ねず、通常の通知順序を保つ", async (t) => {
+  const warnings = [];
+  const options = { ...await project(t), projectFixes: { heading_conversions: false, html_cell: false, "test-cell-retry": false },
+    onWarning(message) {
+      assert.equal(this, undefined, "警告の呼び出し元を変えない");
+      warnings.push(message);
+    } };
+  const source = table("<ul><li>一</li></ul>").trimEnd();
+  const expected = lines("用語", ": <table>", "  <tr>", "  <td>", "", "  - 一", "", "  </td>", "  </tr>", "  </table>");
+  const expectedWarnings = [
+    "整形する対象 heading_conversions は、分類名にもルール名にもありません。 この指定は無視します。",
+    "整形する対象 html_cell は、分類名にもルール名にもありません。 この指定は無視します。",
+    "整形する対象 test-cell-retry は、この文書の診断にありません。この指定は無視します。",
+  ];
+  for (const [name, prefix, exhaustive] of [["再整形あり", ":\t", false], ["再整形なし", ": ", false], ["別の呼び出し・近道なし", ":\t", true]]) {
+    warnings.length = 0;
+    const callOptions = exhaustive ? { ...options, exhaustive } : options;
+    assert.equal(await formatMarkdown(lines("用語", prefix + source), callOptions), expected, name);
+    assert.deepEqual(warnings, expectedWarnings, name + ": 警告の文・回数・順序");
+  }
+});
+
 test("GFM の見出し付き alert の接頭辞と原文を保つ", async (t) => {
   const options = { ...await project(t), flavor: "gfm" };
   const input = lines("> [!NOTE] 題", ">", "> <table><tr><td><code>x</code></td></tr></table>");
