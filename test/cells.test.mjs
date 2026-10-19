@@ -237,13 +237,12 @@ test("引用・loose のリストと、前の断片で開いた表でも接頭�
   await assertFormats(options, split, splitExpected, "前の断片の table");
 });
 
-test("詰まったリスト・説明・脚注は変えず、tight_lists を先に適用する", async (t) => {
+test("詰まったリスト・脚注は変えず、tight_lists を先に適用する", async (t) => {
   const options = { ...await project(t), fixes: { html: false } };
   const source = table("<code>x</code>").trimEnd();
   for (const [name, input] of [
     ["tight の項目", lines("- 項目", "  " + source, "- 次")],
     ["HTML だけの項目", lines("- " + source)],
-    ["説明", lines("用語", ": " + source)],
     ["長い脚注の名前", lines("本文[^長い名前]", "", "[^長い名前]: " + source)],
   ]) await assertFormats(options, input, input, name);
   const loose = lines("- 項目", "", "  " + source, "", "- 次");
@@ -251,6 +250,146 @@ test("詰まったリスト・説明・脚注は変えず、tight_lists を先�
   await assertFormats(options, loose, tight, "先に詰める");
   const frontMatter = lines("---", 'title: "<table><tr><td><code>x</code></td></tr></table>"', "---", "");
   await assertFormats(options, frontMatter + table("<code>y</code>"), frontMatter + compactTable("`y`"), "front matter");
+});
+
+test("tight の説明の中のセルを Markdown にし、直下の文を p で包まない", async (t) => {
+  const options = await project(t);
+  for (const fixes of [{ html: false }, {}]) {
+    const compact = fixes.html === false;
+    const mode = compact ? "html 無効" : "html 有効";
+    for (const [name, html, markdown, expectedHtml] of [
+      ["リストだけ", "<ul><li>a</li></ul>", "- a", "<ul><li>a</li></ul>"],
+      ["文とリスト", "説明<ul><li>a</li></ul>", "説明\n\n- a", "説明<ul><li>a</li></ul>"],
+      ["文とリストと文", "説明<ul><li>a</li></ul>注記", "説明\n\n- a\n\n注記", "説明<ul><li>a</li></ul>注記"],
+      ["インラインだけ", "<code>x</code> と <b>y</b>", "`x` と **y**", "<code>x</code> と <strong>y</strong>"],
+    ]) {
+      const input = lines("用語", ": " + table(html).trimEnd());
+      const opening = compact ? [": <table><tr><td>"] : [": <table>", "  <tr>", "  <td>"];
+      const closing = compact ? ["  </td></tr></table>"] : ["  </td>", "  </tr>", "  </table>"];
+      const body = markdown.split("\n").map((line) => line ? "  " + line : "");
+      const expected = lines("用語", ...opening, "", ...body, "", ...closing);
+      await assertFormats({ ...options, fixes }, input, expected, mode + ": " + name,
+        "<dl><dt>用語</dt><dd>" + table(expectedHtml) + "</dd></dl>");
+    }
+  }
+});
+
+test("tight の説明ではセル直下の p を含むセルを HTML で残す", async (t) => {
+  const options = await project(t);
+  for (const [name, input, expected] of [
+    ["p の段落とリスト", lines("用語", ": <table><tr><td><p>段落</p><ul><li>a</li></ul></td></tr></table>"),
+      lines("用語", ": <table>", "    <tr>", "      <td>", "        <p>段落</p>", "        <ul>", "          <li>a</li>", "        </ul>", "      </td>", "    </tr>", "  </table>")],
+    ["p の段落 2 つ", lines("用語", ": <table><tr><td><p>一</p><p>二</p></td></tr></table>"),
+      lines("用語", ": <table>", "    <tr>", "      <td>", "        <p>一</p>", "        <p>二</p>", "      </td>", "    </tr>", "  </table>")],
+  ]) {
+    const expectedHtml = "<dl><dt>用語</dt><dd>" + input.slice(input.indexOf("<table>")).trimEnd() + "</dd></dl>";
+    await assertFormats({ ...options, fixes: { html: false } }, input, input, name + ": html 無効", expectedHtml);
+    await assertFormats(options, input, expected, name + ": html 有効", expectedHtml);
+  }
+});
+
+test("loose の説明の中のセルは直下の文を p で包む", async (t) => {
+  const options = await project(t);
+  const expected = lines("用語", "", ": <table>", "  <tr>", "  <td>", "", "  説明", "", "  - a", "", "  </td>", "  </tr>", "  </table>");
+  const expectedHtml = "<dl><dt>用語</dt><dd><table><tr><td><p>説明</p><ul><li>a</li></ul></td></tr></table></dd></dl>";
+  for (const [name, input] of [
+    ["直下の文", lines("用語", "", ": <table><tr><td>説明<ul><li>a</li></ul></td></tr></table>")],
+    ["明示した段落", lines("用語", "", ": <table><tr><td><p>説明</p><ul><li>a</li></ul></td></tr></table>")],
+  ]) await assertFormats(options, input, expected, name, expectedHtml);
+});
+
+test("説明の段落・字下げ・複数の説明と外の入れ物を保つ", async (t) => {
+  const options = await project(t);
+  for (const [name, input, expected, expectedHtml] of [
+    ["段落の後", lines("用語", ": 説明", "", "  <table><tr><td>説明<ul><li>a</li></ul></td></tr></table>"),
+      lines("用語", ": 説明", "", "  <table>", "  <tr>", "  <td>", "", "  説明", "", "  - a", "", "  </td>", "  </tr>", "  </table>"),
+      "<dl><dt>用語</dt><dd>説明<table><tr><td>説明<ul><li>a</li></ul></td></tr></table></dd></dl>"],
+    ["複数行", lines("用語", ":   <table>", "    <tr><td>説明<ul><li>a</li></ul></td></tr>", "    </table>"),
+      lines("用語", ":   <table>", "    <tr>", "    <td>", "", "    説明", "", "    - a", "", "    </td>", "    </tr>", "    </table>"),
+      "<dl><dt>用語</dt><dd><table><tr><td>説明<ul><li>a</li></ul></td></tr></table></dd></dl>"],
+    ["2 つ目", lines("用語", ": 説明1", ": <table><tr><td>説明<ul><li>a</li></ul></td></tr></table>"),
+      lines("用語", ": 説明1", ": <table>", "  <tr>", "  <td>", "", "  説明", "", "  - a", "", "  </td>", "  </tr>", "  </table>"),
+      "<dl><dt>用語</dt><dd>説明1</dd><dd><table><tr><td>説明<ul><li>a</li></ul></td></tr></table></dd></dl>"],
+    ["引用", lines("> 用語", "> : <table><tr><td>説明<ul><li>a</li></ul></td></tr></table>"),
+      lines("> 用語", "> : <table>", ">   <tr>", ">   <td>", ">", ">   説明", ">", ">   - a", ">", ">   </td>", ">   </tr>", ">   </table>"),
+      "<blockquote><dl><dt>用語</dt><dd><table><tr><td>説明<ul><li>a</li></ul></td></tr></table></dd></dl></blockquote>"],
+    ["loose のリスト", lines("- 項目", "", "  用語", "  : <table><tr><td>説明<ul><li>a</li></ul></td></tr></table>"),
+      lines("- 項目", "", "  用語", "  : <table>", "    <tr>", "    <td>", "", "    説明", "", "    - a", "", "    </td>", "    </tr>", "    </table>"),
+      "<ul><li><p>項目</p><dl><dt>用語</dt><dd><table><tr><td>説明<ul><li>a</li></ul></td></tr></table></dd></dl></li></ul>"],
+  ]) await assertFormats(options, input, expected, name, expectedHtml);
+});
+
+test("tight の説明でもセル内の引用と loose の項目の段落は p を保つ", async (t) => {
+  const options = { ...await project(t), fixes: { tight_lists: false } };
+  const input = lines("用語", ": <table><tr><td>説明<blockquote>引用</blockquote><ul><li><p>a</p></li><li><p>b</p></li></ul>注記</td></tr></table>");
+  const expected = lines("用語", ": <table>", "  <tr>", "  <td>", "", "  説明", "", "  > 引用", "", "  - a", "", "  - b", "", "  注記", "", "  </td>", "  </tr>", "  </table>");
+  const expectedHtml = "<dl><dt>用語</dt><dd><table><tr><td>説明<blockquote><p>引用</p></blockquote><ul><li><p>a</p></li><li><p>b</p></li></ul>注記</td></tr></table></dd></dl>";
+  await assertFormats(options, input, expected, "入れ子の段落", expectedHtml);
+});
+
+test("GFM では説明リストの形の段落のセルを変えない", async (t) => {
+  const options = { ...await project(t), flavor: "gfm" };
+  for (const html of ["<ul><li>a</li></ul>", "<code>x</code> と <b>y</b>"]) {
+    const input = lines("用語", ": " + table(html).trimEnd());
+    const expectedHtml = "<p>用語\n: " + table(html).trimEnd() + "</p>";
+    await assertFormats(options, input, input, html + ": html 有効", expectedHtml);
+    await assertFormats({ ...options, fixes: { html: false } }, input, input, html + ": html 無効", expectedHtml);
+  }
+});
+
+test("lint が説明の印の後のタブを直したセルも同じ整形で Markdown にする", async (t) => {
+  const options = await project(t);
+  const input = lines("用語", ":\t" + table("<ul><li>一</li></ul>").trimEnd());
+  const expectedHtml = "<dl><dt>用語</dt><dd><table><tr><td><ul><li>一</li></ul></td></tr></table></dd></dl>";
+  await assertFormats(options, input,
+    lines("用語", ": <table>", "  <tr>", "  <td>", "", "  - 一", "", "  </td>", "  </tr>", "  </table>"), "html 有効", expectedHtml);
+  await assertFormats({ ...options, fixes: { html: false } }, input,
+    lines("用語", ": <table><tr><td>", "", "  - 一", "", "  </td></tr></table>"), "html 無効", expectedHtml);
+});
+
+test("MD010 を止めると説明の印の後のタブと HTML のセルを残す", async (t) => {
+  const options = await project(t);
+  const input = lines("用語", ":\t" + table("<ul><li>一</li></ul>").trimEnd());
+  const expectedHtml = "<dl><dt>用語</dt><dd><table><tr><td><ul><li>一</li></ul></td></tr></table></dd></dl>";
+  for (const fixes of [{ MD010: false }, { MD010: false, html: false }]) {
+    await assertFormats({ ...options, fixes }, input, input, "MD010 無効: " + JSON.stringify(fixes), expectedHtml);
+  }
+});
+
+test("範囲整形では lint でタブが直っても同じ整形でセルを Markdown にしない", async (t) => {
+  const options = { ...await project(t), range: { start: [1, 0], end: [2, Infinity] } };
+  const input = lines("用語", ":\t" + table("<ul><li>一</li></ul>").trimEnd());
+  for (const [fixes, expected] of [
+    [{}, lines("用語", ": <table>", "    <tr>", "      <td>", "        <ul>", "          <li>一</li>", "        </ul>", "      </td>", "    </tr>", "  </table>")],
+    [{ html: false }, lines("用語", ": <table><tr><td><ul><li>一</li></ul></td></tr></table>")],
+  ]) {
+    const output = await formatMarkdown(input, { ...options, fixes });
+    assert.equal(output, expected, "範囲内の 1 回目: " + JSON.stringify(fixes));
+    assert.equal(await formatMarkdown(input, { ...options, fixes, exhaustive: true }), output, "近道の有無で同じ");
+  }
+});
+
+test("html_cells を止めると lint の後もセルを Markdown にしない", async (t) => {
+  const options = { ...await project(t), fixes: { html_cells: false } };
+  const input = lines("用語", ":\t" + table("<ul><li>一</li></ul>").trimEnd());
+  const expected = lines("用語", ": <table>", "    <tr>", "      <td>", "        <ul>", "          <li>一</li>", "        </ul>", "      </td>", "    </tr>", "  </table>");
+  const expectedHtml = "<dl><dt>用語</dt><dd><table><tr><td><ul><li>一</li></ul></td></tr></table></dd></dl>";
+  await assertFormats(options, input, expected, "html_cells 無効", expectedHtml);
+});
+
+test("lint 後のセルで整形し直しても警告は 1 回だけ出し、stats に加算する", async (t) => {
+  const warnings = [];
+  const stats = { parses: 100, blockParses: 200, lints: 300, renders: 400 };
+  const before = { ...stats };
+  const options = { ...await project(t), projectFixes: { "test-cell-retry": false },
+    onWarning: (message) => warnings.push(message), stats };
+  const input = lines("用語", ":\t" + table("<ul><li>一</li></ul>").trimEnd());
+  const expected = lines("用語", ": <table>", "  <tr>", "  <td>", "", "  - 一", "", "  </td>", "  </tr>", "  </table>");
+  assert.equal(await formatMarkdown(input, options), expected);
+  assert.equal(warnings.length, 1, "外側と内側で警告を重ねない");
+  assert.match(warnings[0], /test-cell-retry.*診断にありません/u);
+  for (const key of Object.keys(stats)) assert.ok(stats[key] >= before[key], key + " を上書きしない");
+  assert.ok(stats.parses > before.parses && stats.lints > before.lints && stats.renders > before.renders);
 });
 
 test("GFM の見出し付き alert の接頭辞と原文を保つ", async (t) => {
