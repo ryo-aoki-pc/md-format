@@ -153,7 +153,7 @@ test("HTML のセルの節には分類と要素ごとの置き換え・保持・
   const cells = [...sections].filter(([id]) => id.startsWith("cells:"));
   assert.deepEqual(cells.map(([id]) => id), [
     "cells:コードと強調", "cells:リンクと画像", "cells:改行と段落", "cells:リストとタスク", "cells:コードブロック",
-    "cells:引用と説明リスト", "cells:文字のエスケープ", "cells:入れ物の中", "cells:変えないもの", "cells:止めたとき",
+    "cells:引用と説明リスト", "cells:文字のエスケープ", "cells:入れ物の中", "cells:説明リストの中", "cells:変えないもの", "cells:止めたとき",
   ]);
   for (const [id, section] of cells) assert.ok(section.examples.length, `${id} に例がある`);
   const examples = cells.flatMap(([, section]) => section.examples);

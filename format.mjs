@@ -11,6 +11,8 @@ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const runtimes = new Map();
 const MAX_PASSES = 16;
 const MAX_FIXES = 4096;
+const cellRestarts = Symbol("cellRestarts");
+const warningHistory = Symbol("warningHistory");
 
 const containers = new Set([
   "List", "Item", "TaskItem", "BlockQuote", "MultilineBlockQuote",
@@ -1786,7 +1788,9 @@ function cellStyles(source, nodes, lines) {
 }
 
 // 文字の原文を守りながら、Markdown に読まれる記号だけを打ち消す。
-function cellMarkdown(html, { flavor, styles, dependencies }) {
+// bare は、セルの直下の段落が <p> で包まれない所 (tight の説明の中) のセル。文書全体の比べには、
+// セルの直下のインラインの並びを <p> で包まない期待 (contextExpected) を使い、セルの直下の <p> の要素は消えるので変えない。
+function cellMarkdown(html, { flavor, styles, dependencies, bare = false }) {
   const { decodeHTML, decodeHTMLStrict } = dependencies;
   const tree = cellTree(html, dependencies, flavor);
   if (!tree) return null;
@@ -1935,7 +1939,7 @@ function cellMarkdown(html, { flavor, styles, dependencies }) {
       }
       const value = inline(content, task);
       const markdown = escapeStarts(tidy(finishBreaks(value.markdown)));
-      if (markdown) parts.push({ markdown, expected: mode === "blocks" ? "<p>" + value.expected + "</p>" : value.expected });
+      if (markdown) parts.push({ markdown, expected: mode === "blocks" ? "<p>" + value.expected + "</p>" : value.expected, bare: value.expected });
       else if (value.expected) parts.push({ markdown: "", expected: value.expected });
       run = [];
     };
@@ -1952,7 +1956,8 @@ function cellMarkdown(html, { flavor, styles, dependencies }) {
       previous = node.name;
     }
     flush();
-    return { markdown: parts.map((part) => part.markdown).filter(Boolean).join(mode === "tight" ? "\n" : "\n\n"), expected: parts.map((part) => part.expected).join("") };
+    return { markdown: parts.map((part) => part.markdown).filter(Boolean).join(mode === "tight" ? "\n" : "\n\n"),
+      expected: parts.map((part) => part.expected).join(""), bare: parts.map((part) => part.bare ?? part.expected).join("") };
   };
   const block = (node, task = false) => {
     const { name, attrs } = node;
@@ -2049,21 +2054,31 @@ function cellMarkdown(html, { flavor, styles, dependencies }) {
     return fail();
   };
   try {
+    if (bare && significant(tree.children).some((child) => child.name === "p")) return null;
     const value = sequence(tree.children);
     if (!changed || !value.markdown) return null;
     const lines = value.markdown.split("\n");
     // GLFM の ::include は行頭 (入れ物の印の後を含む) に書いたときだけ働く。HTML の中では働かないので、行頭に出るセルは変えない。
     if (flavor.descriptionProjection && lines.some((line) => /^[ \t>]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*::include\{/u.test(line))) return null;
-    return { lines, expected: value.expected };
+    return { lines, expected: value.expected, contextExpected: bare ? value.bare : value.expected };
   } catch {
     return null;
   }
 }
 
+// tight の説明の項目では、説明の直下の段落を <p> で包まない (Comrak と GitLab)。説明の中に空行を足しても
+// 項目の tight は変わらないので、そこに置いたセルの Markdown の段落も包まれない。
+function cellBareParagraphs(nodes, index) {
+  const parent = nodes[index].parent;
+  if (parent === undefined || nodeType(nodes[parent]) !== "DescriptionDetails") return false;
+  const item = nodes[nodes[parent].parent];
+  return nodeType(item) === "DescriptionItem" && item.data.value.DescriptionItem.tight;
+}
+
 function cellAncestorExcluded(nodes, index) {
   for (let parent = nodes[index].parent; parent !== undefined; parent = nodes[parent].parent) {
     const type = nodeType(nodes[parent]);
-    if (type === "DescriptionDetails" || type === "FootnoteDefinition" ||
+    if (type === "FootnoteDefinition" ||
         ((type === "List" || type === "Item") && nodes[parent].data.value[type].tight)) return true;
   }
   return false;
@@ -2112,6 +2127,7 @@ function markdownCellEdits(source, lines, nodes, selection, flavor, dependencies
         return lines[fragment.line - 1 + row].start + fragment.prefixes[row].length + at - offsets[row];
       };
       const excluded = cellAncestorExcluded(nodes, fragment.index);
+      const bare = cellBareParagraphs(nodes, fragment.index);
       const pieces = htmlPieces(literal, raw);
       raw = pieces.raw;
       for (const piece of pieces.pieces) {
@@ -2133,13 +2149,13 @@ function markdownCellEdits(source, lines, nodes, selection, flavor, dependencies
         }
         if (!open) continue;
         if (open.name !== tag.name || open.invalid || !tag.commonMark) { open = null; continue; }
-        const valueOfCell = cellMarkdown(literal.slice(open.start, begin), { flavor, styles, dependencies });
+        const valueOfCell = cellMarkdown(literal.slice(open.start, begin), { flavor, styles, dependencies, bare });
         if (valueOfCell) {
           const start = actualOffset(open.start);
           const end = actualOffset(begin);
           const body = valueOfCell.lines.map((line) => line ? continuation + line : continuation.trimEnd()).join(ending);
           const replacement = ending + continuation.trimEnd() + ending + body + ending + continuation.trimEnd() + ending + continuation;
-          edits.push({ start, end, replacement, expected: valueOfCell.expected.replace(/\n/gu, ending + continuation),
+          edits.push({ start, end, replacement, expected: valueOfCell.contextExpected.replace(/\n/gu, ending + continuation),
             markdown: valueOfCell.lines.join("\n"), cellExpected: valueOfCell.expected, open: open.token, close: piece.token });
         }
         open = null;
@@ -2527,7 +2543,16 @@ export async function formatMarkdown(source, options = {}) {
   }
   const selection = selectedRange(source, options.range);
   if (selection && selection.end < selection.start) throw new Error("整形範囲の開始と終了が逆です。");
-  const selected = fixSelector(options.fixes, options.projectFixes, options.onWarning, options.projectConfigPath);
+  // 外側では従来どおり通知し、整形し直した内側だけ、既に通知した警告の文を省く。
+  const previousWarnings = options[warningHistory];
+  const warned = previousWarnings ?? new Set();
+  const { onWarning } = options;
+  const warn = typeof onWarning === "function" ? (message) => {
+    if (previousWarnings && warned.has(message)) return;
+    warned.add(message);
+    onWarning(message);
+  } : onWarning;
+  const selected = fixSelector(options.fixes, options.projectFixes, warn, options.projectConfigPath);
   settings.observeRules = selected.observeRules;
   const dependencies = await runtime(options.runtimeDir || scriptDirectory);
   // 試験用: exhaustive は近道 (修正候補が無いときの早い終わりと、保護範囲の修正と、詰まったリストに空行を足す修正を
@@ -2765,6 +2790,17 @@ export async function formatMarkdown(source, options = {}) {
     if (!changed) {
       if (snapshotOf(current).loose !== originalOf().loose) {
         throw new Error("文書の構造 (説明リストかリストの詰まり) を保持できませんでした。");
+      }
+      // lint の修正で、Markdown にできるセルが増えることがある (GLFM の説明の印の後のタブを MD010 が空白にすると、
+      // タブの接頭辞で見送ったセルが変えられるようになる)。次の整形で初めてセルが変わらないよう、セルを変えた文書から
+      // 整形し直す (tight_lists・lint・html の段もその文書に当てる)。範囲整形は範囲を移せないので、次の整形に任せる。
+      if (selected.htmlCells && !selection && current !== start) {
+        const retried = markdownCells(current, { parse, render, selection, exhaustive, flavor, dependencies });
+        if (retried !== current) {
+          const restarts = options[cellRestarts] ?? 0;
+          if (restarts >= MAX_PASSES) throw new Error("整形結果が収束しないため中止しました。");
+          return formatMarkdown(retried, { ...options, [cellRestarts]: restarts + 1, [warningHistory]: warned });
+        }
       }
       return finish(current);
     }
