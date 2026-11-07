@@ -1,6 +1,6 @@
 // 方言 (GLFM と GFM) ごとの違いの表。format.mjs が、解析・描画の比べ・front matter・守る記法・説明リストの投影・
 // 見出しにしない行・HTML の比べのブロック要素を、ここから選ぶ。GitHub の値は、GitHub の Markdown API で確かめたもの
-// (非公開の ryo-aoki-pc/setup-notes-verification の repos/md-format/docs/verification/readme.md)。
+// (Forgejo の非公開リポジトリ setup-notes-verification の repos/md-format/docs/verification/readme.md)。
 
 const parserOptions = {
   extension: {
