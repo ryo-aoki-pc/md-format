@@ -2,7 +2,7 @@
 
 このリポジトリで作業するコーディングエージェント（Claude Code・Codex・Grok Build・Antigravity CLI）への指示。Claude Code は CLAUDE.md の `@AGENTS.md` で、Codex・Grok Build・Antigravity CLI はこのファイルを直接読む。
 
-GFM と GLFM の Markdown を、描画を変えずに整形する `mdfmt` コマンド。使い方は [README.md](README.md)、ルールごとの例は [docs/reference/rules.md](docs/reference/rules.md)、設計の理由は [docs/reference/readme.md](docs/reference/readme.md)、検証記録は [非公開側の readme.md](https://github.com/ryo-aoki-pc/setup-notes-verification/blob/main/repos/md-format/docs/verification/readme.md)。Neovim の保存時の整形（conform と予備のプロセスの Lua）は [LazyVimStarter](https://github.com/ryo-aoki-pc/LazyVimStarter) にある。
+GFM と GLFM の Markdown を、描画を変えずに整形する `mdfmt` コマンド。使い方は [README.md](README.md)、ルールごとの例は [docs/reference/rules.md](docs/reference/rules.md)、設計の理由は [docs/reference/readme.md](docs/reference/readme.md)、検証記録は `repos/md-format/docs/verification/readme.md`。Neovim の保存時の整形（conform と予備のプロセスの Lua）は [LazyVimStarter](https://github.com/ryo-aoki-pc/LazyVimStarter) にある。
 
 ## 導入手順の正本
 
@@ -17,8 +17,8 @@ Windows 11・AlmaLinux 10 の導入・更新・使い方の手順は、setup-not
 - `test/` — `node --test` の試験。`reference.test.mjs` は `docs/reference/rules.md` と README の「整形の例」の例をすべて整形し直して確かめる
 - `docs/reference/rules.md` — 分類とルールごとの例（試験が読む。例の書き方は `reference.test.mjs` の決まりに従う）
 - `bench/bench.mjs` — 速さの測り方（比べるコマンドを交互に動かし、中央値と最も遅い値を Markdown の表で出す）
-- 検証記録（試験・前の整形器との比べ・CLI・導入・速さ）は、非公開の `ryo-aoki-pc/setup-notes-verification` の `repos/md-format/docs/verification/` の `readme.md` に置く
-- 検証記録を書く・直すときは、非公開の `setup-notes-verification` を clone し、そちらへ Pull Request を作る
+- 検証記録（試験・前の整形器との比べ・CLI・導入・速さ）は、Forgejo の非公開リポジトリ `setup-notes-verification` の `repos/md-format/docs/verification/` の `readme.md` に置く
+- 検証記録を書く・直すときは、Forgejo の非公開リポジトリ `setup-notes-verification` を clone し、そちらへ Pull Request を作る。このリポジトリから検証記録へは URL で指さず、「`<検証記録のパス>` の「<見出し>」」と文字で書く（見出しを指さないときは、同じ名前の文書の記録なら「検証記録」とだけ書き、ほかの記録はパスを添える）
 
 ## テスト
 
