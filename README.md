@@ -2,7 +2,7 @@
 
 GFM と GLFM の Markdown を、描画を変えずに整形する `mdfmt` コマンド。
 
-導入・使い方・更新の手順は、setup-notes の [windows-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/windows-setup.md#md-format)（Windows 11）と [almalinux-setup.md](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/almalinux-setup.md#md-format)（AlmaLinux 10）の「md-format」とその子の項にある。
+AlmaLinux 10・Windows 11 の導入・更新の手順は [docs/install.md](docs/install.md)、使い方の手順は [docs/usage.md](docs/usage.md) にある。
 ルールごとの例は [docs/reference/rules.md](docs/reference/rules.md)、設計は [docs/reference/readme.md](docs/reference/readme.md)、検証記録は `repos/md-format/docs/verification/readme.md` にある。
 
 ## できること
@@ -34,6 +34,7 @@ node ~/md-format/scripts/setup.mjs --check
 - cmd の `mdfmt.cmd` は、引数の `&`・`%名前%` などを cmd が解釈する。そうした文字を含むファイル名は、PowerShell か Git Bash から渡す
 - 更新は `git -C ~/md-format pull --ff-only` の後に、導入スクリプトを実行し直す
 - 導入先を使っている Neovim があると、Windows では入れ替えられないことがある。そのときは Neovim を閉じてやり直す
+- AlmaLinux 10・Windows 11 の手順（Node.js の導入と確認を含む）は [docs/install.md](docs/install.md) にある
 
 ## 使い方
 
