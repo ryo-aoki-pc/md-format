@@ -274,3 +274,7 @@ npm test
 ```
 
 Pull Request と `main` への push では、GitHub Actions が構文の確認と試験を ubuntu・windows（Node.js 22・26）で動かす。
+
+## ライセンス
+
+md-format は [MIT ライセンス](LICENSE)。依存（comrak・entities・js-beautify・markdownlint-cli2 と、その依存）はこのリポジトリに含めず、導入スクリプトが npm のレジストリから導入先へ入れる。それぞれのライセンスは、導入先の `node_modules/<名前>/` と `package-lock.json` の `license` の欄にある。
