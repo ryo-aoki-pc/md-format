@@ -272,3 +272,5 @@ HTML の表の書式のあるセルは、空行で区切った Markdown にす�
 npm ci --ignore-scripts
 npm test
 ```
+
+Pull Request と `main` への push では、GitHub Actions が同じ試験を ubuntu・windows（Node.js 22・26）で動かす。
