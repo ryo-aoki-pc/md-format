@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "GFM と GLFM の Markdown を、描画を変えずに整形する CLI（mdfmt）",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "bin": { "mdfmt": "format.mjs" },
   "engines": { "node": ">=22" },

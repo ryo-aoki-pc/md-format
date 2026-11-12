@@ -19,6 +19,7 @@ Windows 11・AlmaLinux 10 の導入・更新の手順は [docs/install.md](docs/
 - `docs/usage.md` — AlmaLinux 10・Windows 11 の Markdown を整形する手順
 - `docs/reference/rules.md` — 分類とルールごとの例（試験が読む。例の書き方は `reference.test.mjs` の決まりに従う）
 - `bench/bench.mjs` — 速さの測り方（比べるコマンドを交互に動かし、中央値と最も遅い値を Markdown の表で出す）
+- `LICENSE` — MIT ライセンス
 - `.github/workflows/test.yml` — ubuntu・windows、Node.js 22・26 での検査
 - 検証記録（試験・前の整形器との比べ・CLI・導入・速さ）は、Forgejo の非公開リポジトリ `setup-notes-verification` の `repos/md-format/docs/verification/` の `readme.md` に置く
 - 検証記録を書く・直すときは、Forgejo の非公開リポジトリ `setup-notes-verification` を clone し、そちらへ Pull Request を作る。このリポジトリから検証記録へは URL で指さず、「`<検証記録のパス>` の「<見出し>」」と文字で書く（見出しを指さないときは、同じ名前の文書の記録なら「検証記録」とだけ書き、ほかの記録はパスを添える）
