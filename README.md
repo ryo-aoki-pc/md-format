@@ -273,4 +273,4 @@ npm ci --ignore-scripts
 npm test
 ```
 
-Pull Request と `main` への push では、GitHub Actions が同じ試験を ubuntu・windows（Node.js 22・26）で動かす。
+Pull Request と `main` への push では、GitHub Actions が構文の確認と試験を ubuntu・windows（Node.js 22・26）で動かす。
