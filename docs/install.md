@@ -78,7 +78,7 @@
 ### Windows 11 で md-format を導入・更新する
 
 - Markdown を整形する mdfmt を入れ、導入状態を確かめる
-- 前提: [アプリを入れる](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/windows-setup.md#アプリを入れる)の手順 2・3 を通し、同じ項の手順 9 で PowerShell 7 の実行ポリシーが `RemoteSigned`（`Unrestricted`・`Bypass` でもよい）であることを確かめてある
+- 前提: [scoop](https://scoop.sh/)が入っていて、PowerShell 7 の実行ポリシーが `RemoteSigned`（`Unrestricted`・`Bypass` でもよい）であることを確かめてある
 - 実行場所: この PC のデスクトップの管理者ではない PowerShell 7。この項の手順 1 で開く
 - Node.js 22 以上が要る。この項の手順 2 で、無ければ scoop で入れる
 - 更新時は `git -C "$env:USERPROFILE\md-format" status` で既存の変更を確かめてから進む
@@ -86,7 +86,7 @@
 1. 管理者ではない PowerShell 7 を開く。
 
    - スタートメニューで「PowerShell」を探し、クリックして開く（「Windows PowerShell」ではない。「管理者として実行」にはしない）
-   - 「PowerShell」が無ければ、[アプリを入れる](https://github.com/ryo-aoki-pc/setup-notes/blob/main/docs/windows-setup.md#アプリを入れる)の手順 6〜9 を通す
+   - 「PowerShell」が無ければ、[PowerShell 7](https://learn.microsoft.com/en-us/powershell/scripting/install/install-powershell-on-windows)を入れる
 
 1. Node.js が無ければ scoop で入れ、版を確かめる。
 
